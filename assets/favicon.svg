@@ -1,0 +1,28 @@
+<svg width="300" height="300" viewBox="0 0 300 300" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background circle -->
+  <circle cx="150" cy="150" r="140" fill="#f0f6ff" stroke="#2c67b2" stroke-width="6"/>
+    
+    <g transform="rotate(30 150 150)">
+
+        <!-- Network nodes and connections (Simétrico) -->
+        <circle cx="80" cy="80" r="20" fill="#2c67b2"/> <!-- A -->
+        <circle cx="80" cy="220" r="20" fill="#2c67b2"/> <!-- D -->
+        <circle cx="220" cy="80" r="20" fill="#2c67b2"/> <!-- B -->
+        <circle cx="220" cy="220" r="20" fill="#2c67b2"/> <!-- C -->
+
+        <!-- Connection lines -->
+        <line x1="80" y1="80" x2="80" y2="220" stroke="#2c67b2" stroke-width="5"/> <!-- A-B -->
+        <line x1="80" y1="80" x2="220" y2="80" stroke="#2c67b2" stroke-width="5"/> <!-- B-C -->
+        <line x1="220" y1="80" x2="220" y2="220" stroke="#2c67b2" stroke-width="5"/> <!-- C-D -->
+        <line x1="80" y1="220" x2="220" y2="220" stroke="#2c67b2" stroke-width="5"/> <!-- D-A -->
+
+    </g>
+
+  <!-- Data packet animation -->
+  <circle cx="150" cy="150" r="40" fill="#41b6e6" opacity="0.7"></circle>
+  
+  <!-- Central icon representing packet tracing -->
+  <path d="M150,130 L170,150 L150,170 L130,150 Z" fill="#2c67b2"/>
+  
+  <!-- Text -->
+</svg>

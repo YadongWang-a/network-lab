@@ -1,0 +1,25 @@
+<svg width="100" height="100" xmlns="http://www.w3.org/2000/svg">
+  <rect x="2" y="2" width="96" height="96" rx="15" ry="15" fill="#f0f0f0" stroke="#c0c0c0" stroke-width="4" />
+  <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 103.083 100.125"
+    height="70" width="70" x="16" y="13"
+    fill="#fff" fill-rule="evenodd" stroke="#000" stroke-linecap="round" stroke-linejoin="round">
+    <use xlink:href="#A" x="1.042" y="2.083" />
+    <symbol id="A" overflow="visible">
+      <g stroke="none" fill-rule="nonzero">
+        <path d="M100.296 6.375L87.967 4.431H10.983L0 6.448.075 96.485l65.902-.075 34.371-25.104-.075-64.931z" />
+        <path
+          d="M93.808 73.09h-26.7v9.333c0 1.151-.933 2.083-2.083 2.083-1.046 0-1.875-.781-2.021-1.785v11.304h2.417l28.396-20.933z"
+          fill="#d0cfce" />
+        <path
+          d="M69.9 0v11.742M59.983 0v11.742M50.067 0v11.742M79.817 0v11.742M40.15 0v11.742M30.234 0v11.742M20.317 0v11.742" />
+      </g>
+      <g fill="none" stroke-width="4.167">
+        <path
+          d="M69.9 0v11.742M59.984 0v11.742M50.067 0v11.742M79.817 0v11.742M40.15 0v11.742M30.234 0v11.742M20.317 0v11.742m-9.75 20.335h78.746M10.567 53.896h78.746M10.567 75.715h46.094" />
+        <path d="M29.204 21.85v64.806" />
+        <path d="M88.327 6.287h11.74l.077 64.719-34.042 25.1-65.958.01L.067 6.287h11.75" />
+        <path d="M99.621 71.006h-34.6v11.417" />
+      </g>
+    </symbol>
+  </svg>
+</svg>

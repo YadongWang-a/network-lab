@@ -1,0 +1,13 @@
+<svg width="100" height="100" xmlns="http://www.w3.org/2000/svg">
+  <rect x="2" y="2" width="96" height="96" rx="15" ry="15" fill="#f0f0f0" stroke="#c0c0c0" stroke-width="4" />
+  <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" 
+    width="100" height="70" viewBox="0 0 90 100" x="-5" y="20"
+    fill="#fff" fill-rule="evenodd" stroke="#000" stroke-linecap="round" stroke-linejoin="round">
+    <use xlink:href="#A" x="2.083" y="2.083" />
+    <symbol id="A" overflow="visible">
+      <path
+        d="M4.498 78.577c.875.354 1.865.59 2.85.59 1.535 0 3.071-.59 4.385-1.535L66.01 45.854l.548-.59a8 8 0 0 0 2.194-5.556c0-2.125-.767-4.135-2.194-5.552l-.548-.59L11.733 1.552C9.76-.102 6.908-.456 4.496.606 1.754 1.787 0 4.741 0 7.931V71.25c0 3.188 1.754 6.146 4.496 7.325zM100.002 0v79.167M83.335 0v79.167"
+        fill="none" stroke-width="4.167" />
+    </symbol>
+  </svg>
+</svg>

@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 60 50" fill="#fff"
+    fill-rule="evenodd" stroke="#000" stroke-linecap="round" stroke-linejoin="round">
+    <defs>
+        <symbol id="message-bus" overflow="visible">
+            <rect x="0" y="10" width="30" height="23" fill="#ffff" stroke="#000" stroke-width="0.4" />
+            <path d="M0,10 L15,22 L30,10" fill="none" stroke="#000" stroke-width="0.4"  />
+        </symbol>
+    </defs>
+    <use xlink:href="#message-bus" x="5" y="5" />
+</svg>

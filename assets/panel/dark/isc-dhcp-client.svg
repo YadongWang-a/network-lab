@@ -1,0 +1,31 @@
+<svg width="300" height="300" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 300">
+
+  <rect x="10" y="10" width="280" height="280" rx="15" ry="15" fill="#0d1117" stroke="#c0c0c0" stroke-width="4" />
+
+  <g transform="translate(-70, 30) scale(1.1)">
+
+    <path d="M100,100 L200,50 L300,100 L200,150 Z" fill="#2121d3" fill-opacity="0.7" />
+    <path d="M100,100 L100,170 L200,220 L200,150 Z" fill="#2121d3" fill-opacity="0.8" />
+    <path d="M300,100 L300,170 L200,220 L200,150 Z" fill="#2121d3" fill-opacity="0.6" />
+
+    <g transform="translate(113, 140) skewY(26) scale(0.9, 0.7)">
+      <text fill="white" font-family="Arial" font-weight="bold" font-size="16">ISC DHCP</text>
+      <text fill="white" font-family="Arial" font-weight="bold" font-size="16" y="20" x="-2">SERVER</text>
+    </g>
+
+    <g transform="translate(220, 175) skewY(-25) scale(0.9, 0.7)">
+      <text fill="white" font-family="Arial" font-weight="bold" font-size="16">ISC DHCP</text>
+      <text fill="white" font-family="Arial" font-weight="bold" font-size="16" y="20">SERVER</text>
+    </g>
+
+  </g>
+
+  <g transform="translate(-70, -30) scale(1.1)">
+    <path d="M200,50 C160,50 150,80 150,90 C130,90 110,100 110,130 C110,160 130,170 150,170 
+            L250,170 C270,170 290,160 290,130 C290,100 270,90 250,90 
+            C250,80 240,50 200,50 Z" fill="white" stroke="#2121d3" stroke-width="6" />
+
+    <path d="M200,80 L200,140 L180,120 L200,145 L220,120 L200,140 Z" fill="#2121d3" stroke="#2121d3" stroke-width="2" />
+  </g>
+
+</svg>
