@@ -559,6 +559,10 @@ function Shell() {
   }
 
   async function playSequence(rows: TraceRow[], pkts: Packet[], hops: Array<{ fromId: string; toId: string; proto: string }>) {
+    // 每次执行新命令：清空旧追踪行/报文与详情悬浮窗（Reopen issue）
+    setTraces([]);
+    setTracePkts([]);
+    setDetails([]);
     setAnimBusy(true);
     setTraceOpen(true);
     for (let i = 0; i < hops.length; i++) {
@@ -589,14 +593,14 @@ function Shell() {
       ? '93.184.216.34'
       : (dst!.data.ip === '—' || dst!.data.ip === t('device.unconfigured') ? sip : dst!.data.ip);
     const dmac = dst ? macOf(nodes.findIndex((n) => n.id === dstId)) : macOf(63);
-    let time = traces.length ? parseFloat(traces[traces.length - 1].time) + 0.001 : 0.001;
+    let time = 0.001;
     const rows: TraceRow[] = [];
     const pkts: Packet[] = [];
     const hops: Array<{ fromId: string; toId: string; proto: string }> = [];
     const srcNodeId = src.id;
     const dstNodeId = dst ? dst.id : src.id;
     function add(proto: string, s: string, d: string, info: string, packet: Packet, fromId: string, toId: string) {
-      rows.push({ key: `c-${traces.length + rows.length}-${Date.now()}`, time: time.toFixed(3), proto, src: s, dst: d, info });
+      rows.push({ key: `c-${Date.now()}-${rows.length}`, time: time.toFixed(3), proto, src: s, dst: d, info });
       pkts.push(packet);
       hops.push({ fromId, toId, proto });
       time += 0.001;

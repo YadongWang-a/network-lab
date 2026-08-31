@@ -8,7 +8,11 @@ blocked_by: []
 blocks: []
 labels: wayfinder:grilling
 resolved: "2026-08-31"
----
+
+## Reopen issue（已修复）
+
+- **报文追踪不随命令执行清空**：演示命令执行时旧追踪行/报文/详情悬浮窗保留并继续追加，时间戳也从上次末尾续接。预期：每次执行新命令，追踪栏清空后按新序列从 0.001s 重新计时。
+- **修复**（commit 见 git log）：`playSequence` 开头 `setTraces([])` / `setTracePkts([])` / `setDetails([])`；`runCommand` 时间恒定从 `0.001` 起（不再取旧末行续接）；行 key 去除对旧 `traces.length` 的依赖。浏览器实测连续三次执行：每次行数从 0 增长、首行 `0.001s`。
 
 ## Question
 
