@@ -33,6 +33,7 @@ status: open
 - **[UI 设计系统 = Ant Design v6·仅浅色]**（WF-9 原型已确认）— 顶栏 + [画布 | 报文追踪栏] + 底部固定设备栏（横排不分组）；画布/图标复刻原版；设备名牌、悬停操作按钮（终端/租约）、可拖多开报文详情、演示命令面板（Ping/TCP/浏览网页 生成报文序列）。产物 `src/prototype/AppPrototype.tsx`。解锁 WF-8。
 - **[画布 PoC = React Flow 已验证]**（WF-4 已决）— 滚轮缩放/拖拽平移/控件/节点拖动/拉线/拖放全成立；Handle 置节点中心、直线中心连线。与 WF-9 同产物。
 - **[i18n = react-i18next 已落地]**（WF-8 已决）— 全部界面文案进 zh/en locale（~110 key），中文默认；协议/命令名保留原文；main.tsx 初始化顺序修正。实测通过。
+- **[报文可视化 = 事件驱动两级架构]**（WF-5 已决）— 引擎单向发事件（`SimulationEngine.on`），可视化层 `simEventToViz` 纯函数翻译为动画动作；`ProtocolViz` 插件（id/label/color + match/animate 钩子）静态装配进 `VizRegistry`，色码为可配置元数据；store 只存意图态（开关/速度/暂停/报文历史），动画帧为组件 ephemeral；画布几何经适配器解耦。落点 `src/visualization/registry.ts`（已抽离，原型已改用），事件接线/钩子排 WF-14。解锁 WF-12（可视化单测）、WF-14。
 
 ## Not yet specified（fog）
 

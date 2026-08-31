@@ -26,6 +26,7 @@ import {
 import { FolderOpenOutlined, PlusOutlined, CaretRightOutlined, CodeOutlined, TableOutlined, RightOutlined, LeftOutlined } from '@ant-design/icons';
 import zhCN from 'antd/locale/zh_CN';
 import type { Layer, Packet } from '@/domain/types';
+import { viz } from '@/visualization/registry';
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -103,23 +104,7 @@ const panelItems: PanelItem[] = [
   { key: 'hide', icon: 'hide-panel.svg', tipKey: 'panel.hide', tool: 'hide' },
 ];
 
-// —— 协议可视化注册表（WF-5）：轨迹 Tag 色码与画布动画共用 ——
-interface VizEntry { tag: string; hex: string }
-const vizRegistry: Record<string, VizEntry> = {
-  unicast: { tag: 'blue', hex: '#1677ff' },
-  arp: { tag: 'geekblue', hex: '#2f54eb' },
-  icmp: { tag: 'green', hex: '#52c41a' },
-  dns: { tag: 'purple', hex: '#722ed1' },
-  dhcp: { tag: 'orange', hex: '#fa8c16' },
-  tcp: { tag: 'cyan', hex: '#13c2c2' },
-  broadcast: { tag: 'red', hex: '#f5222d' },
-  http: { tag: 'blue', hex: '#1677ff' },
-};
-
-function vizOf(proto: string): VizEntry {
-  return vizRegistry[proto] ?? { tag: 'default', hex: '#8c8c8c' };
-}
-
+// —— 协议可视化注册表（WF-5）：色码元数据已抽离至 src/visualization/registry.ts ——
 const waitMs = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 interface TraceRow {
@@ -561,7 +546,7 @@ function Shell() {
     const a = nodeCenterOnScreen(hop.fromId);
     const b = nodeCenterOnScreen(hop.toId);
     if (!a || !b) return;
-    const hex = vizRegistry[hop.proto]?.hex ?? vizOf(hop.proto).hex;
+    const hex = viz.colorOf(hop.proto).hex;
     vizSeq.current += 1;
     const dotId = vizSeq.current;
     setVizDots((ds) => [...ds, { id: dotId, x: a.x, y: a.y, hex }]);
@@ -820,7 +805,7 @@ function Shell() {
                         style={{ display: 'block', padding: '6px 4px', cursor: 'pointer' }}
                       >
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <Tag color={vizOf(row.proto).tag} style={{ marginInlineEnd: 0 }}>
+                          <Tag color={viz.colorOf(row.proto).tag} style={{ marginInlineEnd: 0 }}>
                             {row.proto.toUpperCase()}
                           </Tag>
                           <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
