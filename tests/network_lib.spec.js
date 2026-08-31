@@ -5,7 +5,7 @@ import { ips, macs } from './mockup.js';
 describe('network_lib.js', () => {
 
     const window = createWindowWithScripts(
-        '../src/lib/network_lib.js',
+        '../src/legacy/lib/network_lib.js',
     );
 
     suite('isValidMac(mac)', () => {

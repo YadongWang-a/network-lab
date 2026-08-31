@@ -4,7 +4,7 @@ import { createWindowWithScripts } from './setup-globals.js';
 describe('Switch', () => {
 
     const window = createWindowWithScripts(
-        '../src/components/network_elements/switch.js',
+        '../src/legacy/components/network_elements/switch.js',
     );
 
     suite('Switch()', () => {
