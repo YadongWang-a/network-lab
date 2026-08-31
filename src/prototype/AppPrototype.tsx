@@ -23,7 +23,7 @@ import {
   Space,
 } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
-import { FolderOpenOutlined, PlusOutlined, CaretRightOutlined, CodeOutlined, TableOutlined, RightOutlined, LeftOutlined, ApartmentOutlined } from '@ant-design/icons';
+import { FolderOpenOutlined, PlusOutlined, CaretRightOutlined, CodeOutlined, TableOutlined, RightOutlined, LeftOutlined } from '@ant-design/icons';
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -224,15 +224,15 @@ function DeviceNodeView({ data }: NodeProps<DeviceFlowNode>) {
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
     >
-      {/* 连接点：置于节点中心（loose 模式），边渲染为中心到中心、图标下层 */}
-      <Handle type="target" position={Position.Top} style={{ left: '50%', top: '50%', opacity: 0 }} />
+      {/* 中心锚点（隐藏）：所有边显式锚定到设备中心，渲染确定性 */}
+      <Handle id="src-c" type="source" position={Position.Top} style={{ left: '50%', top: '50%', opacity: 0 }} />
       <img
         src={`/assets/board/${boardIcon[data.kind]}`}
         alt={t(kindKey[data.kind])}
         style={{ width: '100%', height: '100%', pointerEvents: 'none' }}
         draggable={false}
       />
-      <Handle type="source" position={Position.Bottom} style={{ left: '50%', top: '50%', opacity: 0 }} />
+      <Handle id="tgt-c" type="target" position={Position.Top} style={{ left: '50%', top: '50%', opacity: 0 }} />
       {hover && data.kind !== 'annotation' && iconBtn(t('panel.openTerminal'), -8, () => actions.openTerminal(data.label, data.ip === '—' ? t('device.unconfigured') : data.ip), <CodeOutlined style={{ fontSize: 12 }} />)}
       {hover && data.kind === 'dhcpserver' && iconBtn(t('panel.leases'), 18, () => actions.openLeases(data.label), <TableOutlined style={{ fontSize: 12 }} />)}
       {/* 设备名牌：名称 + IP（按类型区分；绝对定位，不影响节点尺寸与连线中心） */}
@@ -266,10 +266,10 @@ const seedNodes: DeviceFlowNode[] = [
 ];
 
 const seedEdges: Edge[] = [
-  { id: 'pc-0-sw-0', source: 'pc-0', target: 'sw-0' },
-  { id: 'pc-1-sw-0', source: 'pc-1', target: 'sw-0' },
-  { id: 'sw-0-r-0', source: 'sw-0', target: 'r-0' },
-  { id: 'r-0-dhcp-0', source: 'r-0', target: 'dhcp-0' },
+  { id: 'pc-0-sw-0', source: 'pc-0', target: 'sw-0', sourceHandle: 'src-c', targetHandle: 'tgt-c' },
+  { id: 'pc-1-sw-0', source: 'pc-1', target: 'sw-0', sourceHandle: 'src-c', targetHandle: 'tgt-c' },
+  { id: 'sw-0-r-0', source: 'sw-0', target: 'r-0', sourceHandle: 'src-c', targetHandle: 'tgt-c' },
+  { id: 'r-0-dhcp-0', source: 'r-0', target: 'dhcp-0', sourceHandle: 'src-c', targetHandle: 'tgt-c' },
 ];
 
 const edgeStyle = { stroke: '#5a7d7c', strokeWidth: 2 };
@@ -319,8 +319,6 @@ function Shell() {
   const [url, setUrl] = useState('www.example.com');
   const [terminals, setTerminals] = useState<Array<{ id: number; label: string; ip: string; x: number; y: number; lines: string[]; input: string }>>([]);
   const [leaseWin, setLeaseWin] = useState<{ x: number; y: number; label: string } | null>(null);
-  const [connectMode, setConnectMode] = useState(false);
-  const [connectFrom, setConnectFrom] = useState<DeviceFlowNode | null>(null);
   const seq = useRef(0);
   const { screenToFlowPosition } = useReactFlow();
 
@@ -551,34 +549,21 @@ function Shell() {
         tag: (target.className || target.tagName).toString().slice(0, 50),
         nodeId: nodeEl ? nodeEl.getAttribute('data-id') : null,
         pane: Boolean(target.closest('.react-flow__pane')),
-        mode: connectMode,
-        from: connectFrom ? connectFrom.id : null,
       };
       if (!nodeEl) {
         if (target.closest('.react-flow__pane')) {
           setSelected(null);
-          setConnectMode(false);
-          setConnectFrom(null);
         }
         return;
       }
       const id = nodeEl.getAttribute('data-id');
       const n = nodes.find((nd) => nd.id === id);
       if (!n) return;
-      if (connectMode) {
-        if (!connectFrom) { setConnectFrom(n); return; }
-        if (n.id !== connectFrom.id) {
-          setEdges((es) => addEdge({ source: connectFrom.id, target: n.id, sourceHandle: null, targetHandle: null, type: 'straight', style: edgeStyle }, es));
-          setConnectMode(false);
-          setConnectFrom(null);
-        }
-        return;
-      }
       setSelected(n);
     }
     el.addEventListener('click', onClick);
     return () => el.removeEventListener('click', onClick);
-  }, [nodes, connectMode, connectFrom]);
+  }, [nodes]);
   return (
     <NodeActions.Provider value={{ openTerminal, openLeases }}>
       <div style={{ height: '100dvh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -663,21 +648,6 @@ function Shell() {
             )}
 
             {/* 收起报文追踪后的展开按钮（画布右上角） */}
-            {/* 连线模式开关（画布右上角） */}
-            <Tooltip title={t('canvas.connectMode')} placement="left">
-              <Button
-                size="small"
-                type={connectMode ? 'primary' : 'default'}
-                icon={<ApartmentOutlined />}
-                onClick={() => { setConnectMode((v) => !v); setConnectFrom(null); }}
-                style={{ position: 'absolute', top: 10, right: traceOpen ? 10 : 54, zIndex: 10 }}
-              />
-            </Tooltip>
-            {connectMode && (
-              <div style={{ position: 'absolute', top: 14, right: 44, zIndex: 10, background: '#fff', border: '1px solid #d9d9d9', borderRadius: 6, padding: '2px 8px', fontSize: 12, color: '#1677ff', pointerEvents: 'none' }}>
-                {connectFrom ? t('canvas.pickTarget') : t('canvas.pickSource')}
-              </div>
-            )}
             {!traceOpen && (
               <Tooltip title={t('trace.expand')} placement="left">
                 <Button
