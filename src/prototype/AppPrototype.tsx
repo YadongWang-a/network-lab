@@ -194,7 +194,7 @@ function layerFields(layer: Layer): Array<[string, string]> {
 }
 
 // —— React Flow 节点/边 ——
-type DeviceData = { kind: Kind; label: string; ip: string };
+type DeviceData = { kind: Kind; label: string; ip: string; netmask: string; gateway: string; ipv4Forwarding: boolean };
 type DeviceFlowNode = Node<DeviceData, 'device'>;
 
 function DeviceNodeView({ data }: NodeProps<DeviceFlowNode>) {
@@ -273,11 +273,11 @@ function DeviceNodeView({ data }: NodeProps<DeviceFlowNode>) {
 const nodeTypes = { device: DeviceNodeView };
 
 const seedNodes: DeviceFlowNode[] = [
-  { id: 'pc-0', type: 'device', position: { x: 180, y: 100 }, data: { kind: 'pc', label: 'PC-0', ip: '192.168.1.10' } },
-  { id: 'pc-1', type: 'device', position: { x: 180, y: 290 }, data: { kind: 'pc', label: 'PC-1', ip: '192.168.1.11' } },
-  { id: 'sw-0', type: 'device', position: { x: 430, y: 195 }, data: { kind: 'switch', label: 'Switch-0', ip: '—' } },
-  { id: 'r-0', type: 'device', position: { x: 680, y: 195 }, data: { kind: 'router', label: 'Router-0', ip: '192.168.1.1' } },
-  { id: 'dhcp-0', type: 'device', position: { x: 680, y: 380 }, data: { kind: 'dhcpserver', label: 'DHCP-0', ip: '192.168.1.1' } },
+  { id: 'pc-0', type: 'device', position: { x: 180, y: 100 }, data: { kind: 'pc', label: 'PC-0', ip: '192.168.1.10', netmask: '255.255.255.0', gateway: '192.168.1.1', ipv4Forwarding: false } },
+  { id: 'pc-1', type: 'device', position: { x: 180, y: 290 }, data: { kind: 'pc', label: 'PC-1', ip: '192.168.1.11', netmask: '255.255.255.0', gateway: '192.168.1.1', ipv4Forwarding: false } },
+  { id: 'sw-0', type: 'device', position: { x: 430, y: 195 }, data: { kind: 'switch', label: 'Switch-0', ip: '—', netmask: '', gateway: '', ipv4Forwarding: false } },
+  { id: 'r-0', type: 'device', position: { x: 680, y: 195 }, data: { kind: 'router', label: 'Router-0', ip: '192.168.1.1', netmask: '255.255.255.0', gateway: '', ipv4Forwarding: true } },
+  { id: 'dhcp-0', type: 'device', position: { x: 680, y: 380 }, data: { kind: 'dhcpserver', label: 'DHCP-0', ip: '192.168.1.1', netmask: '255.255.255.0', gateway: '', ipv4Forwarding: false } },
 ];
 
 const seedEdges: Edge[] = [
@@ -354,7 +354,7 @@ function Shell() {
         id,
         type: 'device',
         position: { x: pos.x - 40, y: pos.y - 40 },
-        data: { kind, label: id, ip: kind === 'switch' ? '—' : t('device.unconfigured') },
+        data: { kind, label: id, ip: kind === 'switch' ? '—' : t('device.unconfigured'), netmask: '255.255.255.0', gateway: '', ipv4Forwarding: false },
       },
     ]);
   }
@@ -559,12 +559,8 @@ function Shell() {
     if (!el) return;
     function onClick(e: MouseEvent) {
       const target = e.target as HTMLElement;
+      if (target.closest('button')) return; // 设备上的操作按钮（终端/租约）不触发选中/抽屉
       const nodeEl = target.closest('.react-flow__node');
-      (window as unknown as Record<string, unknown>).__natClick = {
-        tag: (target.className || target.tagName).toString().slice(0, 50),
-        nodeId: nodeEl ? nodeEl.getAttribute('data-id') : null,
-        pane: Boolean(target.closest('.react-flow__pane')),
-      };
       if (!nodeEl) {
         if (target.closest('.react-flow__pane')) {
           setSelected(null);
@@ -808,11 +804,32 @@ function Shell() {
         width={360}
       >
         {selected && (
-          <Form layout="vertical" initialValues={{ ip: selected.data.ip, mask: '255.255.255.0', gw: '192.168.1.1' }}>
+          <Form
+            key={selected.id}
+            layout="vertical"
+            initialValues={{
+              label: selected.data.label,
+              ip: selected.data.ip,
+              mask: selected.data.netmask,
+              gw: selected.data.gateway,
+              fwd: selected.data.ipv4Forwarding,
+            }}
+            onFinish={(vals) => {
+              setNodes((nds) =>
+                nds.map((n) =>
+                  n.id === selected.id
+                    ? { ...n, data: { ...n.data, label: vals.label, ip: vals.ip, netmask: vals.mask, gateway: vals.gw, ipv4Forwarding: Boolean(vals.fwd) } }
+                    : n
+                )
+              );
+              setSelected(null);
+            }}
+          >
+            <Form.Item label={t('drawer.label')} name="label"><Input /></Form.Item>
             <Form.Item label={t('drawer.ip')} name="ip"><Input /></Form.Item>
             <Form.Item label={t('drawer.mask')} name="mask"><Input /></Form.Item>
             <Form.Item label={t('drawer.gw')} name="gw"><Input /></Form.Item>
-            <Form.Item label={t('drawer.forwarding')}><Switch /></Form.Item>
+            <Form.Item label={t('drawer.forwarding')} name="fwd" valuePropName="checked"><Switch /></Form.Item>
             <Form.Item label={t('drawer.services')}>
               <Space>
                 <Tag color="blue">{t('svc.dhclient')}</Tag>
@@ -834,6 +851,9 @@ function Shell() {
                 ]}
               />
             </Form.Item>
+            <Button type="primary" htmlType="submit" block>
+              {t('drawer.save')}
+            </Button>
           </Form>
         )}
       </Drawer>

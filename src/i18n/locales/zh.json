@@ -1,6 +1,7 @@
 {
   "app.title": "PackeTTrino 网络模拟器",
-  "nav.open": "打开",
+  "drawer.label": "设备名称",
+  "drawer.save": "保存",
   "canvas.connectMode": "连线模式：点击起点设备，再点终点设备",
   "canvas.pickSource": "点击起点设备 (A)",
   "canvas.pickTarget": "点击终点设备 (B)",
