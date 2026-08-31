@@ -109,6 +109,8 @@ const waitMs = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve
 
 interface TraceRow {
   key: string; time: string; proto: string; src: string; dst: string; info: string;
+  /** 报文经过的设备节点（演示命令直接记录；示例数据由 IP 反查）。点击行时重放对应动画。 */
+  fromId?: string; toId?: string;
 }
 
 const traceData: TraceRow[] = [
@@ -558,6 +560,14 @@ function Shell() {
     setVizDots((ds) => ds.filter((d) => d.id !== dotId));
   }
 
+  // 点击追踪行：重放该报文对应的画布动画（WF-5 续）。演示命令行直接用记录的节点；
+  // 示例数据行（无 fromId/toId）按 src/dst IP 反查拓扑节点，两端齐全才重放。
+  function replayHop(row: TraceRow) {
+    const fromId = row.fromId ?? nodes.find((n) => n.data.ip === row.src)?.id;
+    const toId = row.toId ?? nodes.find((n) => n.data.ip === row.dst)?.id;
+    if (fromId && toId) void animateHop({ fromId, toId, proto: row.proto });
+  }
+
   async function playSequence(rows: TraceRow[], pkts: Packet[], hops: Array<{ fromId: string; toId: string; proto: string }>) {
     // 每次执行新命令：清空旧追踪行/报文与详情悬浮窗（Reopen issue）
     setTraces([]);
@@ -600,7 +610,7 @@ function Shell() {
     const srcNodeId = src.id;
     const dstNodeId = dst ? dst.id : src.id;
     function add(proto: string, s: string, d: string, info: string, packet: Packet, fromId: string, toId: string) {
-      rows.push({ key: `c-${Date.now()}-${rows.length}`, time: time.toFixed(3), proto, src: s, dst: d, info });
+      rows.push({ key: `c-${Date.now()}-${rows.length}`, time: time.toFixed(3), proto, src: s, dst: d, info, fromId, toId });
       pkts.push(packet);
       hops.push({ fromId, toId, proto });
       time += 0.001;
@@ -805,7 +815,7 @@ function Shell() {
                     dataSource={traces}
                     renderItem={(row, index) => (
                       <List.Item
-                        onClick={() => openDetail(row, index)}
+                        onClick={() => { openDetail(row, index); replayHop(row); }}
                         style={{ display: 'block', padding: '6px 4px', cursor: 'pointer' }}
                       >
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
