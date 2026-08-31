@@ -233,6 +233,21 @@ function DeviceNodeView({ data }: NodeProps<DeviceFlowNode>) {
         draggable={false}
       />
       <Handle id="tgt-c" type="target" position={Position.Top} style={{ left: '50%', top: '50%', opacity: 0 }} />
+      {/* 连接点：悬停设备显示四边蓝点；按住蓝点拖到目标设备松手即连线（loose 模式） */}
+      {(['top', 'right', 'bottom', 'left'] as const).map((pos) => (
+        <Handle
+          key={pos}
+          type="source"
+          position={pos === 'top' ? Position.Top : pos === 'bottom' ? Position.Bottom : pos === 'left' ? Position.Left : Position.Right}
+          style={{
+            opacity: hover ? 1 : 0,
+            width: 11,
+            height: 11,
+            background: '#1677ff',
+            border: '2px solid #fff',
+          }}
+        />
+      ))}
       {hover && data.kind !== 'annotation' && iconBtn(t('panel.openTerminal'), -8, () => actions.openTerminal(data.label, data.ip === '—' ? t('device.unconfigured') : data.ip), <CodeOutlined style={{ fontSize: 12 }} />)}
       {hover && data.kind === 'dhcpserver' && iconBtn(t('panel.leases'), 18, () => actions.openLeases(data.label), <TableOutlined style={{ fontSize: 12 }} />)}
       {/* 设备名牌：名称 + IP（按类型区分；绝对定位，不影响节点尺寸与连线中心） */}

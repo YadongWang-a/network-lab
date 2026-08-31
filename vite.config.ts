@@ -4,7 +4,7 @@ import { fileURLToPath, URL } from 'node:url';
 
 export default defineConfig({
   plugins: [react()],
-  server: { port: 5273, strictPort: true, host: '127.0.0.1' },
+  server: { port: 5273, strictPort: true, host: '127.0.0.1', watch: { usePolling: true, interval: 300 } },
   resolve: {
     alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
   },
