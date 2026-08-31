@@ -1,6 +1,6 @@
 /*
  * PROTOTYPE — 非生产代码（WF-9 UI 原型 + WF-8 i18n 落地）。
- * 布局：顶部标题栏 + [左画布 | 右报文追踪栏] + 底部固定设备栏；画布复刻原版（React Flow）。
+ * 布局：顶部标题栏 + [左画布 | 右报文追踪栏]；设备图标条悬浮于画布底部居中（不分组）。
  * 本版：全部界面文案接入 react-i18next（中文默认，key 见 src/i18n/locales/*.json）；
  * 协议名/命令名保留原文。真实实现由 WF-4/WF-5/正式实现替换本文件。
  */
@@ -625,6 +625,43 @@ function Shell() {
               <Controls showInteractive={false} position="top-left" />
             </ReactFlow>
 
+            {/* 设备图标条：悬浮于画布底部、水平居中（不分组，原版图标与顺序） */}
+            {panelOpen && (
+              <div
+                style={{
+                  position: 'absolute', left: '50%', bottom: 10, zIndex: 10, transform: 'translateX(-50%)',
+                  display: 'flex', alignItems: 'center', gap: 2,
+                  backgroundColor: '#fff', border: '1px solid #d9d9d9', borderRadius: 8,
+                  boxShadow: '0 2px 8px rgba(0,0,0,0.15)', padding: '4px 8px',
+                  maxWidth: 'calc(100% - 20px)', overflowX: 'auto',
+                }}
+              >
+                {panelItems.map((it) => {
+                  const tile = (
+                    <div
+                      key={it.key}
+                      draggable={Boolean(it.drag)}
+                      onDragStart={it.drag ? (e) => e.dataTransfer.setData('text/plain', it.key) : undefined}
+                      onClick={
+                        it.tool === 'traffic' ? () => setTraceOpen((v) => !v)
+                          : it.tool === 'cmd' ? () => setCmdOpen((v) => !v)
+                            : it.tool === 'hide' ? () => setPanelOpen(false)
+                              : undefined
+                      }
+                      style={{
+                        width: 40, height: 40, borderRadius: 6, flexShrink: 0,
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        cursor: it.drag || it.tool ? 'pointer' : 'default',
+                      }}
+                    >
+                      <img src={`/assets/panel/${it.icon}`} alt={it.key} style={{ width: 30, height: 30 }} draggable={false} />
+                    </div>
+                  );
+                  return <Tooltip key={it.key} title={t(it.tipKey)} placement="top">{tile}</Tooltip>;
+                })}
+              </div>
+            )}
+
             {/* 收起报文追踪后的展开按钮（画布右上角） */}
             {/* 连线模式开关（画布右上角） */}
             <Tooltip title={t('canvas.connectMode')} placement="left">
@@ -726,39 +763,6 @@ function Shell() {
           )}
         </div>
 
-        {/* —— 底部固定设备栏（不分组，原版图标与顺序）—— */}
-        {panelOpen && (
-          <div
-            style={{
-              height: 56, flexShrink: 0, borderTop: '1px solid #e5e5e5', background: '#fff',
-              display: 'flex', alignItems: 'center', gap: 2, padding: '0 8px', overflowX: 'auto',
-            }}
-          >
-            {panelItems.map((it) => {
-              const tile = (
-                <div
-                  key={it.key}
-                  draggable={Boolean(it.drag)}
-                  onDragStart={it.drag ? (e) => e.dataTransfer.setData('text/plain', it.key) : undefined}
-                  onClick={
-                    it.tool === 'traffic' ? () => setTraceOpen((v) => !v)
-                      : it.tool === 'cmd' ? () => setCmdOpen((v) => !v)
-                        : it.tool === 'hide' ? () => setPanelOpen(false)
-                          : undefined
-                  }
-                  style={{
-                    width: 40, height: 40, borderRadius: 6, flexShrink: 0,
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    cursor: it.drag || it.tool ? 'pointer' : 'default',
-                  }}
-                >
-                  <img src={`/assets/panel/${it.icon}`} alt={it.key} style={{ width: 30, height: 30 }} draggable={false} />
-                </div>
-              );
-              return <Tooltip key={it.key} title={t(it.tipKey)} placement="top">{tile}</Tooltip>;
-            })}
-          </div>
-        )}
 
         {/* 演示命令面板（悬浮、可拖拽） */}
         {cmdOpen && (
