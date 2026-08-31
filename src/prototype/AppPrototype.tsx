@@ -224,27 +224,15 @@ function DeviceNodeView({ data }: NodeProps<DeviceFlowNode>) {
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
     >
-      {/* 连接点：悬停设备时显示四边圆点；loose 模式下任意点可作起点/终点，拖到目标设备即连线 */}
-      {(['top', 'right', 'bottom', 'left'] as const).map((pos) => (
-        <Handle
-          key={pos}
-          type={pos === 'top' || pos === 'right' ? 'source' : 'target'}
-          position={pos === 'top' ? Position.Top : pos === 'bottom' ? Position.Bottom : pos === 'left' ? Position.Left : Position.Right}
-          style={{
-            opacity: hover ? 1 : 0,
-            width: 10,
-            height: 10,
-            background: '#1677ff',
-            border: '2px solid #fff',
-          }}
-        />
-      ))}
+      {/* 连接点：置于节点中心（loose 模式），边渲染为中心到中心、图标下层 */}
+      <Handle type="target" position={Position.Top} style={{ left: '50%', top: '50%', opacity: 0 }} />
       <img
         src={`/assets/board/${boardIcon[data.kind]}`}
         alt={t(kindKey[data.kind])}
         style={{ width: '100%', height: '100%', pointerEvents: 'none' }}
         draggable={false}
       />
+      <Handle type="source" position={Position.Bottom} style={{ left: '50%', top: '50%', opacity: 0 }} />
       {hover && data.kind !== 'annotation' && iconBtn(t('panel.openTerminal'), -8, () => actions.openTerminal(data.label, data.ip === '—' ? t('device.unconfigured') : data.ip), <CodeOutlined style={{ fontSize: 12 }} />)}
       {hover && data.kind === 'dhcpserver' && iconBtn(t('panel.leases'), 18, () => actions.openLeases(data.label), <TableOutlined style={{ fontSize: 12 }} />)}
       {/* 设备名牌：名称 + IP（按类型区分；绝对定位，不影响节点尺寸与连线中心） */}
@@ -664,42 +652,7 @@ function Shell() {
               </Tooltip>
             )}
 
-            {/* 设备图标条：悬浮于画布底部（复刻原版浮动面板；不分组） */}
-            {panelOpen && (
-              <div
-                style={{
-                  position: 'absolute', left: '50%', bottom: 10, zIndex: 10, transform: 'translateX(-50%)',
-                  display: 'flex', alignItems: 'center', gap: 2,
-                  backgroundColor: '#fff', border: '1px solid #d9d9d9', borderRadius: 8,
-                  boxShadow: '0 2px 8px rgba(0,0,0,0.15)', padding: '4px 8px',
-                  maxWidth: 'calc(100% - 20px)', overflowX: 'auto',
-                }}
-              >
-                {panelItems.map((it) => {
-                  const tile = (
-                    <div
-                      key={it.key}
-                      draggable={Boolean(it.drag)}
-                      onDragStart={it.drag ? (e) => e.dataTransfer.setData('text/plain', it.key) : undefined}
-                      onClick={
-                        it.tool === 'traffic' ? () => setTraceOpen((v) => !v)
-                          : it.tool === 'cmd' ? () => setCmdOpen((v) => !v)
-                            : it.tool === 'hide' ? () => setPanelOpen(false)
-                              : undefined
-                      }
-                      style={{
-                        width: 40, height: 40, borderRadius: 6, flexShrink: 0,
-                        display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        cursor: it.drag || it.tool ? 'pointer' : 'default',
-                      }}
-                    >
-                      <img src={`/assets/panel/${it.icon}`} alt={it.key} style={{ width: 30, height: 30 }} draggable={false} />
-                    </div>
-                  );
-                  return <Tooltip key={it.key} title={t(it.tipKey)} placement="top">{tile}</Tooltip>;
-                })}
-              </div>
-            )}
+
 
             {/* 收起设备栏后的展开把手（左下角） */}
             {!panelOpen && (
