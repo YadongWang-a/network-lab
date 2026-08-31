@@ -3,7 +3,7 @@ id: WF-5
 title: 报文可视化可扩展架构
 type: grilling
 status: open
-assignee: ""
+assignee: "main"
 blocked_by: []
 blocks: []
 labels: wayfinder:grilling

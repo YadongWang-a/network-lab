@@ -1,8 +1,9 @@
 /*
- * PROTOTYPE — 非生产代码（WF-9 UI 原型 + WF-8 i18n 落地）。
+ * PROTOTYPE — 非生产代码（WF-9 UI 原型 + WF-8 i18n + WF-5 可视化）。
  * 布局：顶部标题栏 + [左画布 | 右报文追踪栏]；设备图标条悬浮于画布底部居中（不分组）。
- * 本版：全部界面文案接入 react-i18next（中文默认，key 见 src/i18n/locales/*.json）；
- * 协议名/命令名保留原文。真实实现由 WF-4/WF-5/正式实现替换本文件。
+ * 画布复刻原版（React Flow）：白底 #A0E7E5 网格、原版 SVG 图标、缩放/平移、拖放设备、
+ * 悬停四边蓝点拖拽连线、设备名牌、悬停操作按钮（终端/租约）、命令面板驱动报文流动动画。
+ * 全部界面文案接入 react-i18next（中文默认）。真实实现由 WF-4/WF-5/正式实现替换本文件。
  */
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -22,23 +23,23 @@ import {
   Card,
   Space,
 } from 'antd';
-import zhCN from 'antd/locale/zh_CN';
 import { FolderOpenOutlined, PlusOutlined, CaretRightOutlined, CodeOutlined, TableOutlined, RightOutlined, LeftOutlined } from '@ant-design/icons';
+import zhCN from 'antd/locale/zh_CN';
+import type { Layer, Packet } from '@/domain/types';
 import {
   ReactFlow,
   ReactFlowProvider,
   Background,
   BackgroundVariant,
   Controls,
+  Handle,
+  Position,
   addEdge,
   ConnectionMode,
   applyNodeChanges,
-  Handle,
-  Position,
   useReactFlow,
 } from '@xyflow/react';
 import type { Edge, Node, NodeChange, NodeProps } from '@xyflow/react';
-import type { Layer, Packet } from '@/domain/types';
 import '@xyflow/react/dist/style.css';
 import i18n from '@/i18n';
 
@@ -73,7 +74,7 @@ const NodeActions = createContext<{
   openLeases: (label: string) => void;
 }>({ openTerminal: () => {}, openLeases: () => {} });
 
-// —— 面板条目（顺序/图标与原项目 panel.js 一致；底部固定一条，不分组）——
+// —— 面板条目（顺序/图标与原项目 panel.js 一致；悬浮画布底部居中，不分组）——
 interface PanelItem {
   key: string;
   icon: string;
@@ -102,11 +103,24 @@ const panelItems: PanelItem[] = [
   { key: 'hide', icon: 'hide-panel.svg', tipKey: 'panel.hide', tool: 'hide' },
 ];
 
-// —— 报文轨迹（协议色码，对接 WF-5）——
-const protoColor: Record<string, string> = {
-  unicast: 'blue', icmp: 'green', dns: 'purple',
-  dhcp: 'orange', tcp: 'cyan', broadcast: 'red',
+// —— 协议可视化注册表（WF-5）：轨迹 Tag 色码与画布动画共用 ——
+interface VizEntry { tag: string; hex: string }
+const vizRegistry: Record<string, VizEntry> = {
+  unicast: { tag: 'blue', hex: '#1677ff' },
+  arp: { tag: 'geekblue', hex: '#2f54eb' },
+  icmp: { tag: 'green', hex: '#52c41a' },
+  dns: { tag: 'purple', hex: '#722ed1' },
+  dhcp: { tag: 'orange', hex: '#fa8c16' },
+  tcp: { tag: 'cyan', hex: '#13c2c2' },
+  broadcast: { tag: 'red', hex: '#f5222d' },
+  http: { tag: 'blue', hex: '#1677ff' },
 };
+
+function vizOf(proto: string): VizEntry {
+  return vizRegistry[proto] ?? { tag: 'default', hex: '#8c8c8c' };
+}
+
+const waitMs = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 interface TraceRow {
   key: string; time: string; proto: string; src: string; dst: string; info: string;
@@ -194,7 +208,14 @@ function layerFields(layer: Layer): Array<[string, string]> {
 }
 
 // —— React Flow 节点/边 ——
-type DeviceData = { kind: Kind; label: string; ip: string; netmask: string; gateway: string; ipv4Forwarding: boolean };
+type DeviceData = {
+  kind: Kind;
+  label: string;
+  ip: string;
+  netmask: string;
+  gateway: string;
+  ipv4Forwarding: boolean;
+};
 type DeviceFlowNode = Node<DeviceData, 'device'>;
 
 function DeviceNodeView({ data }: NodeProps<DeviceFlowNode>) {
@@ -202,29 +223,13 @@ function DeviceNodeView({ data }: NodeProps<DeviceFlowNode>) {
   const showIp = data.ip !== '—' && data.kind !== 'annotation';
   const actions = useContext(NodeActions);
   const [hover, setHover] = useState(false);
-  const iconBtn = (tip: string, right: number, onClick: () => void, icon: React.ReactNode) => (
-    <Tooltip title={tip} placement="top">
-      <button
-        onMouseDown={(e) => e.stopPropagation()}
-        onClick={(e) => { e.stopPropagation(); onClick(); }}
-        style={{
-          position: 'absolute', top: -8, right, width: 22, height: 22, borderRadius: '50%',
-          border: '1px solid #d9d9d9', background: '#fff', cursor: 'pointer', padding: 0,
-          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 5,
-          boxShadow: '0 1px 4px rgba(0,0,0,0.2)',
-        }}
-      >
-        {icon}
-      </button>
-    </Tooltip>
-  );
+  // 中心锚点（隐藏）：所有边显式锚定到设备中心，渲染确定性
   return (
     <div
       style={{ width: 80, height: 80 }}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
     >
-      {/* 中心锚点（隐藏）：所有边显式锚定到设备中心，渲染确定性 */}
       <Handle id="src-c" type="source" position={Position.Top} style={{ left: '50%', top: '50%', opacity: 0 }} />
       <img
         src={`/assets/board/${boardIcon[data.kind]}`}
@@ -233,14 +238,16 @@ function DeviceNodeView({ data }: NodeProps<DeviceFlowNode>) {
         draggable={false}
       />
       <Handle id="tgt-c" type="target" position={Position.Top} style={{ left: '50%', top: '50%', opacity: 0 }} />
-      {/* 连接点：悬停设备显示四边蓝点；按住蓝点拖到目标设备松手即连线（loose 模式） */}
+      {/* 连接点：始终挂载（拖拽中途卸载会中止连线），悬停时显示四边蓝点 */}
       {(['top', 'right', 'bottom', 'left'] as const).map((pos) => (
         <Handle
           key={pos}
+          id={`src-${pos}`}
           type="source"
           position={pos === 'top' ? Position.Top : pos === 'bottom' ? Position.Bottom : pos === 'left' ? Position.Left : Position.Right}
           style={{
             opacity: hover ? 1 : 0,
+            pointerEvents: hover ? 'all' : 'none',
             width: 11,
             height: 11,
             background: '#1677ff',
@@ -270,6 +277,25 @@ function DeviceNodeView({ data }: NodeProps<DeviceFlowNode>) {
   );
 }
 
+function iconBtn(tip: string, right: number, onClick: () => void, icon: React.ReactNode) {
+  return (
+    <Tooltip title={tip} placement="top">
+      <button
+        onMouseDown={(e) => e.stopPropagation()}
+        onClick={(e) => { e.stopPropagation(); onClick(); }}
+        style={{
+          position: 'absolute', top: -8, right, width: 22, height: 22, borderRadius: '50%',
+          border: '1px solid #d9d9d9', background: '#fff', cursor: 'pointer', padding: 0,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 5,
+          boxShadow: '0 1px 4px rgba(0,0,0,0.2)',
+        }}
+      >
+        {icon}
+      </button>
+    </Tooltip>
+  );
+}
+
 const nodeTypes = { device: DeviceNodeView };
 
 const seedNodes: DeviceFlowNode[] = [
@@ -288,6 +314,7 @@ const seedEdges: Edge[] = [
 ];
 
 const edgeStyle = { stroke: '#5a7d7c', strokeWidth: 2 };
+const edgeFlashStyle = { stroke: '#fa8c16', strokeWidth: 4 };
 
 type CmdKind = 'ping' | 'tcp' | 'http';
 
@@ -313,6 +340,17 @@ const cmdOptions: Array<{ value: CmdKind; labelKey: string }> = [
   { value: 'http', labelKey: 'cmd.http' },
 ];
 
+// 画布背景：白底 + 青色 10px 网格（原 .board 参数）
+const boardStyle: React.CSSProperties = {
+  flex: 1,
+  position: 'relative',
+  overflow: 'hidden',
+  backgroundColor: '#fff',
+  backgroundImage:
+    'linear-gradient(to right, #A0E7E5 1px, transparent 1px), linear-gradient(to bottom, #A0E7E5 1px, transparent 1px)',
+  backgroundSize: '10px 10px',
+};
+
 function Shell() {
   const { t } = useTranslation();
   const [nodes, setNodes] = useState<DeviceFlowNode[]>(seedNodes);
@@ -334,8 +372,13 @@ function Shell() {
   const [url, setUrl] = useState('www.example.com');
   const [terminals, setTerminals] = useState<Array<{ id: number; label: string; ip: string; x: number; y: number; lines: string[]; input: string }>>([]);
   const [leaseWin, setLeaseWin] = useState<{ x: number; y: number; label: string } | null>(null);
+  const [vizDots, setVizDots] = useState<Array<{ id: number; x: number; y: number; hex: string }>>([]);
+  const [flashEdgeId, setFlashEdgeId] = useState<string | null>(null);
+  const [animBusy, setAnimBusy] = useState(false);
+  const vizSeq = useRef(0);
   const seq = useRef(0);
   const { screenToFlowPosition } = useReactFlow();
+  const canvasRef = useRef<HTMLDivElement>(null);
 
   function onNodesChange(changes: NodeChange<DeviceFlowNode>[]) {
     setNodes((nds) => applyNodeChanges(changes, nds));
@@ -505,8 +548,52 @@ function Shell() {
     window.addEventListener('mouseup', onUp);
   }
 
-  // 执行演示命令：按所选命令生成报文序列，写入报文追踪
+  // —— WF-5 可视化：报文沿线移动（A）+ 到达后连线闪烁（B）——
+  function nodeCenterOnScreen(id: string): { x: number; y: number } | null {
+    const el = document.querySelector(`.react-flow__node[data-id="${id}"]`);
+    const cr = canvasRef.current?.getBoundingClientRect();
+    if (!el || !cr) return null;
+    const r = el.getBoundingClientRect();
+    return { x: r.x + r.width / 2 - cr.x, y: r.y + r.height / 2 - cr.y };
+  }
+
+  async function animateHop(hop: { fromId: string; toId: string; proto: string }) {
+    const a = nodeCenterOnScreen(hop.fromId);
+    const b = nodeCenterOnScreen(hop.toId);
+    if (!a || !b) return;
+    const hex = vizRegistry[hop.proto]?.hex ?? vizOf(hop.proto).hex;
+    vizSeq.current += 1;
+    const dotId = vizSeq.current;
+    setVizDots((ds) => [...ds, { id: dotId, x: a.x, y: a.y, hex }]);
+    const steps = 12;
+    for (let i = 1; i <= steps; i++) {
+      await waitMs(40);
+      setVizDots((ds) => ds.map((d) => (d.id === dotId ? { ...d, x: a.x + ((b.x - a.x) * i) / steps, y: a.y + ((b.y - a.y) * i) / steps } : d)));
+    }
+    setVizDots((ds) => ds.filter((d) => d.id !== dotId));
+  }
+
+  async function playSequence(rows: TraceRow[], pkts: Packet[], hops: Array<{ fromId: string; toId: string; proto: string }>) {
+    setAnimBusy(true);
+    setTraceOpen(true);
+    for (let i = 0; i < hops.length; i++) {
+      await animateHop(hops[i]);
+      // B：到达闪烁
+      const eid = edges.find((e) => (e.source === hops[i].fromId && e.target === hops[i].toId) || (e.source === hops[i].toId && e.target === hops[i].fromId))?.id;
+      if (eid) {
+        setFlashEdgeId(eid);
+        await waitMs(320);
+        setFlashEdgeId(null);
+      }
+      setTraces((ts) => [...ts, rows[i]]);
+      setTracePkts((ps) => [...ps, pkts[i]]);
+    }
+    setAnimBusy(false);
+  }
+
+  // 执行演示命令：生成报文序列 → 报文沿线流动 → 轨迹同步增长
   function runCommand() {
+    if (animBusy) return;
     const src = nodes.find((n) => n.id === srcId);
     if (!src) return;
     const dst = nodes.find((n) => n.id === dstId);
@@ -520,9 +607,13 @@ function Shell() {
     let time = traces.length ? parseFloat(traces[traces.length - 1].time) + 0.001 : 0.001;
     const rows: TraceRow[] = [];
     const pkts: Packet[] = [];
-    function add(proto: string, s: string, d: string, info: string, packet: Packet) {
+    const hops: Array<{ fromId: string; toId: string; proto: string }> = [];
+    const srcNodeId = src.id;
+    const dstNodeId = dst ? dst.id : src.id;
+    function add(proto: string, s: string, d: string, info: string, packet: Packet, fromId: string, toId: string) {
       rows.push({ key: `c-${traces.length + rows.length}-${Date.now()}`, time: time.toFixed(3), proto, src: s, dst: d, info });
       pkts.push(packet);
+      hops.push({ fromId, toId, proto });
       time += 0.001;
     }
     const arpPkt = (op: 'request' | 'reply', sMac: string, dMac: string, sIp: string, dIp: string) =>
@@ -530,36 +621,31 @@ function Shell() {
         { kind: 'ethernet', dstMac: op === 'request' ? 'ff:ff:ff:ff:ff:ff' : sMac, srcMac: dMac, etherType: 'arp' },
         { kind: 'arp', op, senderIp: dIp, senderMac: dMac, targetIp: sIp, targetMac: sMac },
       ]);
-    add('arp', sip, dip, i18n.t('gen.arpWho', { dst: dip, src: sip }), arpPkt('request', smac, dmac, sip, dip));
-    add('arp', dip, sip, i18n.t('gen.arpAt', { ip: dip, mac: dmac }), arpPkt('reply', dmac, smac, dip, sip));
+    add('arp', sip, dip, i18n.t('gen.arpWho', { dst: dip, src: sip }), arpPkt('request', smac, dmac, sip, dip), srcNodeId, dstNodeId);
+    add('arp', dip, sip, i18n.t('gen.arpAt', { ip: dip, mac: dmac }), arpPkt('reply', dmac, smac, dip, sip), dstNodeId, srcNodeId);
     if (cmdKind === 'ping') {
-      add('icmp', sip, dip, i18n.t('gen.echoReq'), mkPacket([ethLayer(dmac, smac), ipLayer(sip, dip, 'icmp'), { kind: 'icmp', type: 'echo-request' }]));
-      add('icmp', dip, sip, i18n.t('gen.echoReply'), mkPacket([ethLayer(smac, dmac), ipLayer(dip, sip, 'icmp'), { kind: 'icmp', type: 'echo-reply' }]));
+      add('icmp', sip, dip, i18n.t('gen.echoReq'), mkPacket([ethLayer(dmac, smac), ipLayer(sip, dip, 'icmp'), { kind: 'icmp', type: 'echo-request' }]), srcNodeId, dstNodeId);
+      add('icmp', dip, sip, i18n.t('gen.echoReply'), mkPacket([ethLayer(smac, dmac), ipLayer(dip, sip, 'icmp'), { kind: 'icmp', type: 'echo-reply' }]), dstNodeId, srcNodeId);
     }
     if (cmdKind === 'tcp' || cmdKind === 'http') {
-      add('tcp', sip, dip, i18n.t('gen.syn'), mkPacket([ethLayer(dmac, smac), ipLayer(sip, dip, 'tcp'), tcpLayer(49152, cmdKind === 'http' ? 80 : 8080, 1000, 0, true, false)]));
-      add('tcp', dip, sip, i18n.t('gen.synAck'), mkPacket([ethLayer(smac, dmac), ipLayer(dip, sip, 'tcp'), tcpLayer(cmdKind === 'http' ? 80 : 8080, 49152, 3000, 1001, true, true)]));
-      add('tcp', sip, dip, i18n.t('gen.ack'), mkPacket([ethLayer(dmac, smac), ipLayer(sip, dip, 'tcp'), tcpLayer(49152, cmdKind === 'http' ? 80 : 8080, 1001, 3001, false, true)]));
+      add('tcp', sip, dip, i18n.t('gen.syn'), mkPacket([ethLayer(dmac, smac), ipLayer(sip, dip, 'tcp'), tcpLayer(49152, cmdKind === 'http' ? 80 : 8080, 1000, 0, true, false)]), srcNodeId, dstNodeId);
+      add('tcp', dip, sip, i18n.t('gen.synAck'), mkPacket([ethLayer(smac, dmac), ipLayer(dip, sip, 'tcp'), tcpLayer(cmdKind === 'http' ? 80 : 8080, 49152, 3000, 1001, true, true)]), dstNodeId, srcNodeId);
+      add('tcp', sip, dip, i18n.t('gen.ack'), mkPacket([ethLayer(dmac, smac), ipLayer(sip, dip, 'tcp'), tcpLayer(49152, cmdKind === 'http' ? 80 : 8080, 1001, 3001, false, true)]), srcNodeId, dstNodeId);
     }
     if (cmdKind === 'http') {
-      add('http', sip, dip, i18n.t('gen.get', { url }), mkPacket([ethLayer(dmac, smac), ipLayer(sip, dip, 'tcp'), tcpLayer(49152, 80, 1001, 3001, false, true), { kind: 'http', method: 'GET', host: url, path: '/' }]));
-      add('http', dip, sip, i18n.t('gen.ok', { url }), mkPacket([ethLayer(smac, dmac), ipLayer(dip, sip, 'tcp'), tcpLayer(80, 49152, 3001, 1002, false, true), { kind: 'http', status: 200 }]));
+      add('http', sip, dip, i18n.t('gen.get', { url }), mkPacket([ethLayer(dmac, smac), ipLayer(sip, dip, 'tcp'), tcpLayer(49152, 80, 1001, 3001, false, true), { kind: 'http', method: 'GET', host: url, path: '/' }]), srcNodeId, dstNodeId);
+      add('http', dip, sip, i18n.t('gen.ok', { url }), mkPacket([ethLayer(smac, dmac), ipLayer(dip, sip, 'tcp'), tcpLayer(80, 49152, 3001, 1002, false, true), { kind: 'http', status: 200 }]), dstNodeId, srcNodeId);
     }
-    setTraces((ts) => [...ts, ...rows]);
-    setTracePkts((ps) => [...ps, ...pkts]);
-    setTraceOpen(true);
+    void playSequence(rows, pkts, hops);
   }
 
-
-  const canvasRef = useRef<HTMLDivElement>(null);
-
-  // 原生 click 监听：节点选择 + 连线模式（RF 的 onNodeClick 在本环境不可靠，改用原生事件）
+  // 原生 click 监听：节点选择 → 打开配置抽屉（按钮点击已排除）
   useEffect(() => {
     const el = canvasRef.current;
     if (!el) return;
     function onClick(e: MouseEvent) {
       const target = e.target as HTMLElement;
-      if (target.closest('button')) return; // 设备上的操作按钮（终端/租约）不触发选中/抽屉
+      if (target.closest('button')) return; // 设备上的操作按钮（终端/租约）不触发抽屉
       const nodeEl = target.closest('.react-flow__node');
       if (!nodeEl) {
         if (target.closest('.react-flow__pane')) {
@@ -569,12 +655,12 @@ function Shell() {
       }
       const id = nodeEl.getAttribute('data-id');
       const n = nodes.find((nd) => nd.id === id);
-      if (!n) return;
-      setSelected(n);
+      if (n) setSelected(n);
     }
     el.addEventListener('click', onClick);
     return () => el.removeEventListener('click', onClick);
   }, [nodes]);
+
   return (
     <NodeActions.Provider value={{ openTerminal, openLeases }}>
       <div style={{ height: '100dvh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -601,15 +687,14 @@ function Shell() {
         <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
           {/* 画布（复刻原 .board） */}
           <div ref={canvasRef} style={boardStyle} onDragOver={(e) => e.preventDefault()} onDrop={onDropDevice}>
-
             <ReactFlow<DeviceFlowNode>
               nodes={nodes}
-              edges={edges}
+              edges={edges.map((e) => (flashEdgeId === e.id ? { ...e, style: edgeFlashStyle } : e))}
               nodeTypes={nodeTypes}
               onNodesChange={onNodesChange}
               connectionMode={ConnectionMode.Loose}
               connectionRadius={80}
-              onConnect={(c) => setEdges((es) => addEdge({ ...c, style: edgeStyle, type: 'straight' }, es))}
+              onConnect={(c) => setEdges((es) => addEdge({ ...c, type: 'straight', style: edgeStyle }, es))}
               onDragOver={(e) => e.preventDefault()}
               onDrop={onDropDevice}
               defaultEdgeOptions={{ type: 'straight', style: edgeStyle }}
@@ -620,6 +705,31 @@ function Shell() {
               <Background variant={BackgroundVariant.Lines} gap={10} color="#A0E7E5" />
               <Controls showInteractive={false} position="top-left" />
             </ReactFlow>
+
+            {/* 收起报文追踪后的展开按钮（画布右上角） */}
+            {!traceOpen && (
+              <Tooltip title={t('trace.expand')} placement="left">
+                <Button
+                  size="small"
+                  icon={<LeftOutlined />}
+                  onClick={() => setTraceOpen(true)}
+                  style={{ position: 'absolute', top: 10, right: 10, zIndex: 10 }}
+                />
+              </Tooltip>
+            )}
+
+            {/* WF-5 报文动画层：沿线移动的报文标记 */}
+            {vizDots.map((d) => (
+              <div
+                key={d.id}
+                className="viz-dot"
+                style={{
+                  position: 'absolute', left: d.x - 8, top: d.y - 8, width: 16, height: 16,
+                  borderRadius: '50%', background: d.hex, border: '2px solid #fff',
+                  boxShadow: '0 1px 6px rgba(0,0,0,0.35)', zIndex: 30, pointerEvents: 'none',
+                }}
+              />
+            ))}
 
             {/* 设备图标条：悬浮于画布底部、水平居中（不分组，原版图标与顺序） */}
             {panelOpen && (
@@ -657,20 +767,6 @@ function Shell() {
                 })}
               </div>
             )}
-
-            {/* 收起报文追踪后的展开按钮（画布右上角） */}
-            {!traceOpen && (
-              <Tooltip title={t('trace.expand')} placement="left">
-                <Button
-                  size="small"
-                  icon={<LeftOutlined />}
-                  onClick={() => setTraceOpen(true)}
-                  style={{ position: 'absolute', top: 10, right: 10, zIndex: 10 }}
-                />
-              </Tooltip>
-            )}
-
-
 
             {/* 收起设备栏后的展开把手（左下角） */}
             {!panelOpen && (
@@ -724,7 +820,7 @@ function Shell() {
                         style={{ display: 'block', padding: '6px 4px', cursor: 'pointer' }}
                       >
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <Tag color={protoColor[row.proto] ?? 'default'} style={{ marginInlineEnd: 0 }}>
+                          <Tag color={vizOf(row.proto).tag} style={{ marginInlineEnd: 0 }}>
                             {row.proto.toUpperCase()}
                           </Tag>
                           <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -743,7 +839,6 @@ function Shell() {
             </>
           )}
         </div>
-
 
         {/* 演示命令面板（悬浮、可拖拽） */}
         {cmdOpen && (
@@ -788,7 +883,7 @@ function Shell() {
                   options={nodes.filter((n) => n.id !== srcId).map((n) => ({ value: n.id, label: `${n.data.label}（${t(kindKey[n.data.kind])}）` }))}
                 />
               )}
-              <Button type="primary" icon={<CaretRightOutlined />} onClick={runCommand} block>
+              <Button type="primary" icon={<CaretRightOutlined />} onClick={runCommand} disabled={animBusy} block>
                 {t('cmd.run')}
               </Button>
             </Space>
@@ -796,7 +891,7 @@ function Shell() {
         )}
       </div>
 
-      {/* 设备配置抽屉（点设备弹出） */}
+      {/* 设备配置抽屉（点设备弹出；保存写回设备数据） */}
       <Drawer
         title={selected ? t('drawer.title', { label: selected.data.label, kind: t(kindKey[selected.data.kind]) }) : t('drawer.titlePlain')}
         open={selected !== null}
@@ -889,7 +984,7 @@ function Shell() {
             ]}
           />
           <div style={{ margin: '12px 0 6px', fontWeight: 600 }}>{t('packet.layers')}</div>
-          {p.packet.layers.map((layer: Layer, i: number) => (
+          {p.packet.layers.map((layer, i) => (
             <div key={i} style={{ border: '1px solid #e5e5e5', borderRadius: 6, padding: '6px 10px', marginBottom: 6 }}>
               <div style={{ fontWeight: 600, marginBottom: 4 }}>
                 {i + 1}. {layerTitle(layer.kind)}
@@ -979,16 +1074,6 @@ function Shell() {
     </NodeActions.Provider>
   );
 }
-
-const boardStyle: React.CSSProperties = {
-  flex: 1,
-  position: 'relative',
-  overflow: 'hidden',
-  backgroundColor: '#fff',
-  backgroundImage:
-    'linear-gradient(to right, #A0E7E5 1px, transparent 1px), linear-gradient(to bottom, #A0E7E5 1px, transparent 1px)',
-  backgroundSize: '10px 10px',
-};
 
 export default function AppPrototype() {
   return (
