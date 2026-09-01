@@ -828,17 +828,17 @@ function Shell() {
               )}
             </>
           )}
-          <Button size="small" type="primary" icon={<CaretRightOutlined />} onClick={startSim} disabled={simState === 'running' || simState === 'paused'}>
-            {t('sim.start')}
-          </Button>
-          <Button size="small" icon={<PauseCircleOutlined />} onClick={pauseSim} disabled={simState !== 'running'}>
-            {t('sim.pause')}
-          </Button>
+          {simState === 'running' ? (
+            <Button size="small" icon={<PauseCircleOutlined />} onClick={pauseSim}>
+              {t('sim.pause')}
+            </Button>
+          ) : (
+            <Button size="small" type="primary" icon={<CaretRightOutlined />} onClick={simState === 'paused' ? resumeSim : startSim}>
+              {simState === 'paused' ? t('sim.resume') : t('sim.start')}
+            </Button>
+          )}
           <Button size="small" icon={<StepForwardOutlined />} onClick={stepSim} disabled={simState === 'running' || simState === 'finished'}>
             {t('sim.step')}
-          </Button>
-          <Button size="small" type="primary" icon={<CaretRightOutlined />} onClick={resumeSim} disabled={simState !== 'paused'}>
-            {t('sim.resume')}
           </Button>
         </div>
 
