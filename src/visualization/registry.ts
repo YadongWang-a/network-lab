@@ -36,12 +36,12 @@ const fallback: VizColor = { tag: 'default', hex: '#8c8c8c' };
 /** 内置协议插件（色码体系参考原版 packet_visualize_lib）。 */
 const builtins: ProtocolViz[] = [
   { id: 'unicast', label: 'unicast', color: { tag: 'blue', hex: '#1677ff' } },
-  { id: 'arp', label: 'ARP', color: { tag: 'geekblue', hex: '#2f54eb' } },
+  { id: 'arp', label: 'ARP', color: { tag: 'magenta', hex: '#eb2f96' } },
   { id: 'icmp', label: 'ICMP', color: { tag: 'green', hex: '#52c41a' } },
   { id: 'dns', label: 'DNS', color: { tag: 'purple', hex: '#722ed1' } },
   { id: 'dhcp', label: 'DHCP', color: { tag: 'orange', hex: '#fa8c16' } },
   { id: 'tcp', label: 'TCP', color: { tag: 'cyan', hex: '#13c2c2' } },
-  { id: 'http', label: 'HTTP', color: { tag: 'blue', hex: '#1677ff' } },
+  { id: 'http', label: 'HTTP', color: { tag: 'gold', hex: '#faad14' } },
   { id: 'broadcast', label: 'broadcast', color: { tag: 'red', hex: '#f5222d' } },
 ];
 
