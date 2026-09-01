@@ -302,7 +302,7 @@ const seedEdges: Edge[] = [
 const edgeStyle = { stroke: '#5a7d7c', strokeWidth: 2 };
 const edgeFlashStyle = { stroke: '#fa8c16', strokeWidth: 4 };
 
-type CmdKind = 'ping' | 'tcp' | 'http' | 'ftp';
+type CmdKind = 'ping' | 'tcp' | 'http' | 'ftp' | 'traceroute' | 'dns' | 'dhcp' | 'telnet' | 'arpscan';
 
 function macOf(i: number): string {
   return `aa:bb:cc:dd:ee:${(i + 1).toString(16).padStart(2, '0')}`;
@@ -322,9 +322,14 @@ function tcpLayer(srcPort: number, dstPort: number, seq: number, ack: number, sy
 
 const cmdOptions: Array<{ value: CmdKind; labelKey: string }> = [
   { value: 'ping', labelKey: 'cmd.ping' },
+  { value: 'traceroute', labelKey: 'cmd.traceroute' },
+  { value: 'dns', labelKey: 'cmd.dns' },
+  { value: 'dhcp', labelKey: 'cmd.dhcp' },
   { value: 'tcp', labelKey: 'cmd.tcp' },
+  { value: 'telnet', labelKey: 'cmd.telnet' },
   { value: 'http', labelKey: 'cmd.http' },
   { value: 'ftp', labelKey: 'cmd.ftp' },
+  { value: 'arpscan', labelKey: 'cmd.arpscan' },
 ];
 
 // 画布背景：白底 + 青色 10px 网格（原 .board 参数）
@@ -584,14 +589,52 @@ function Shell() {
       add('icmp', sip, dip, i18n.t('gen.echoReq'), mkPacket([ethLayer(dmac, smac), ipLayer(sip, dip, 'icmp'), { kind: 'icmp', type: 'echo-request' }]), srcNodeId, dstNodeId);
       add('icmp', dip, sip, i18n.t('gen.echoReply'), mkPacket([ethLayer(smac, dmac), ipLayer(dip, sip, 'icmp'), { kind: 'icmp', type: 'echo-reply' }]), dstNodeId, srcNodeId);
     }
-    if (cmdKind === 'tcp' || cmdKind === 'http') {
-      add('tcp', sip, dip, i18n.t('gen.syn'), mkPacket([ethLayer(dmac, smac), ipLayer(sip, dip, 'tcp'), tcpLayer(49152, cmdKind === 'http' ? 80 : 8080, 1000, 0, true, false)]), srcNodeId, dstNodeId);
-      add('tcp', dip, sip, i18n.t('gen.synAck'), mkPacket([ethLayer(smac, dmac), ipLayer(dip, sip, 'tcp'), tcpLayer(cmdKind === 'http' ? 80 : 8080, 49152, 3000, 1001, true, true)]), dstNodeId, srcNodeId);
-      add('tcp', sip, dip, i18n.t('gen.ack'), mkPacket([ethLayer(dmac, smac), ipLayer(sip, dip, 'tcp'), tcpLayer(49152, cmdKind === 'http' ? 80 : 8080, 1001, 3001, false, true)]), srcNodeId, dstNodeId);
+    if (cmdKind === 'tcp' || cmdKind === 'http' || cmdKind === 'ftp' || cmdKind === 'telnet') {
+      const port = cmdKind === 'http' ? 80 : cmdKind === 'ftp' ? 21 : cmdKind === 'telnet' ? 23 : parseInt(targetPort) || 8080;
+      add('tcp', sip, dip, i18n.t('gen.syn'), mkPacket([ethLayer(dmac, smac), ipLayer(sip, dip, 'tcp'), tcpLayer(49152, port, 1000, 0, true, false)]), srcNodeId, dstNodeId);
+      add('tcp', dip, sip, i18n.t('gen.synAck'), mkPacket([ethLayer(smac, dmac), ipLayer(dip, sip, 'tcp'), tcpLayer(port, 49152, 3000, 1001, true, true)]), dstNodeId, srcNodeId);
+      add('tcp', sip, dip, i18n.t('gen.ack'), mkPacket([ethLayer(dmac, smac), ipLayer(sip, dip, 'tcp'), tcpLayer(49152, port, 1001, 3001, false, true)]), srcNodeId, dstNodeId);
     }
     if (cmdKind === 'http') {
       add('http', sip, dip, i18n.t('gen.get', { url }), mkPacket([ethLayer(dmac, smac), ipLayer(sip, dip, 'tcp'), tcpLayer(49152, 80, 1001, 3001, false, true), { kind: 'http', method: 'GET', host: url, path: '/' }]), srcNodeId, dstNodeId);
       add('http', dip, sip, i18n.t('gen.ok', { url }), mkPacket([ethLayer(smac, dmac), ipLayer(dip, sip, 'tcp'), tcpLayer(80, 49152, 3001, 1002, false, true), { kind: 'http', status: 200 }]), dstNodeId, srcNodeId);
+    }
+    if (cmdKind === 'ftp') {
+      add('ftp', sip, dip, `USER anonymous`, mkPacket([ethLayer(dmac, smac), ipLayer(sip, dip, 'tcp'), tcpLayer(49152, 21, 1001, 3001, false, true), { kind: 'http', method: 'USER', host: 'ftp', path: 'anonymous' }]), srcNodeId, dstNodeId);
+      add('ftp', dip, sip, `331 Please specify the password.`, mkPacket([ethLayer(smac, dmac), ipLayer(dip, sip, 'tcp'), tcpLayer(21, 49152, 3001, 1002, false, true), { kind: 'http', status: 331 }]), dstNodeId, srcNodeId);
+    }
+    if (cmdKind === 'telnet') {
+      add('tcp', sip, dip, 'Telnet 会话建立', mkPacket([ethLayer(dmac, smac), ipLayer(sip, dip, 'tcp'), tcpLayer(49152, 23, 1001, 3001, false, true)]), srcNodeId, dstNodeId);
+    }
+    if (cmdKind === 'traceroute') {
+      
+      add('icmp', sip, dip, `TTL=1 探测`, mkPacket([ethLayer(dmac, smac), ipLayer(sip, dip, 'icmp', 1), { kind: 'icmp', type: 'echo-request' }]), srcNodeId, dstNodeId);
+      add('icmp', dip, sip, i18n.t('gen.timeExceeded', { hop: '1' }), mkPacket([ethLayer(smac, dmac), ipLayer(dip, sip, 'icmp', 1), { kind: 'icmp', type: 'time-exceeded' }]), dstNodeId, srcNodeId);
+      add('icmp', sip, dip, `TTL=2 探测`, mkPacket([ethLayer(dmac, smac), ipLayer(sip, dip, 'icmp', 2), { kind: 'icmp', type: 'echo-request' }]), srcNodeId, dstNodeId);
+      add('icmp', dip, sip, i18n.t('gen.echoReply'), mkPacket([ethLayer(smac, dmac), ipLayer(dip, sip, 'icmp'), { kind: 'icmp', type: 'echo-reply' }]), dstNodeId, srcNodeId);
+    }
+    if (cmdKind === 'dns') {
+      const dnsNode = nodes.find((n) => n.data.kind === 'dnsserver');
+      const dnsIp = dnsNode?.data.ip ?? dip;
+      add('dns', sip, dnsIp, `DNS 查询 ${url}`, mkPacket([ethLayer(dmac, smac), ipLayer(sip, dnsIp, 'udp'), { kind: 'udp', srcPort: 49152, dstPort: 53 }, { kind: 'dns', qr: 'query', xid: 0x1234, name: url }]), srcNodeId, dnsNode?.id ?? dstNodeId);
+      add('dns', dnsIp, sip, `DNS 应答 → ${dip}`, mkPacket([ethLayer(smac, dmac), ipLayer(dnsIp, sip, 'udp'), { kind: 'udp', srcPort: 53, dstPort: 49152 }, { kind: 'dns', qr: 'reply', xid: 0x1234, name: url }]), dnsNode?.id ?? dstNodeId, srcNodeId);
+    }
+    if (cmdKind === 'dhcp') {
+      const dhcpNode = nodes.find((n) => n.data.kind === 'dhcpserver');
+      if (dhcpNode) {
+        add('dhcp', '0.0.0.0', '255.255.255.255', 'DHCP Discover（广播）', mkPacket([ethLayer('ff:ff:ff:ff:ff:ff', smac), ipLayer('0.0.0.0', '255.255.255.255', 'udp'), { kind: 'udp', srcPort: 68, dstPort: 67 }, { kind: 'dhcp', messageType: 'discover', xid: 0x3d1d, chaddr: smac }]), srcNodeId, dhcpNode.id);
+        add('dhcp', dhcpNode.data.ip, sip, `DHCP Offer → 提供 ${sip}`, mkPacket([ethLayer(smac, dmac), ipLayer(dhcpNode.data.ip, sip, 'udp'), { kind: 'udp', srcPort: 67, dstPort: 68 }, { kind: 'dhcp', messageType: 'offer', xid: 0x3d1d, chaddr: smac, yiaddr: sip }]), dhcpNode.id, srcNodeId);
+        add('dhcp', '0.0.0.0', '255.255.255.255', 'DHCP Request（广播确认）', mkPacket([ethLayer('ff:ff:ff:ff:ff:ff', smac), ipLayer('0.0.0.0', '255.255.255.255', 'udp'), { kind: 'udp', srcPort: 68, dstPort: 67 }, { kind: 'dhcp', messageType: 'request', xid: 0x3d1d, chaddr: smac }]), srcNodeId, dhcpNode.id);
+        add('dhcp', dhcpNode.data.ip, sip, `DHCP Ack → 确认 ${sip}`, mkPacket([ethLayer(smac, dmac), ipLayer(dhcpNode.data.ip, sip, 'udp'), { kind: 'udp', srcPort: 67, dstPort: 68 }, { kind: 'dhcp', messageType: 'ack', xid: 0x3d1d, chaddr: smac, yiaddr: sip }]), dhcpNode.id, srcNodeId);
+      }
+    }
+    if (cmdKind === 'arpscan') {
+      const sameSubnet = nodes.filter((n) => n.id !== srcId && n.data.ip !== '—' && n.data.ip !== t('device.unconfigured'));
+      sameSubnet.forEach((dev) => {
+        const devMac = macOf(nodes.findIndex((n) => n.id === dev.id));
+        add('arp', sip, dev.data.ip, `ARP 扫描 → ${dev.data.ip}`, mkPacket([ethLayer(devMac, smac), { kind: 'arp', op: 'request', senderIp: sip, senderMac: smac, targetIp: dev.data.ip, targetMac: '00:00:00:00:00:00' }]), srcNodeId, dev.id);
+        add('arp', dev.data.ip, sip, `${dev.data.ip} 位于 ${devMac}`, mkPacket([ethLayer(smac, devMac), { kind: 'arp', op: 'reply', senderIp: dev.data.ip, senderMac: devMac, targetIp: sip, targetMac: smac }]), dev.id, srcNodeId);
+      });
     }
     return { rows, pkts, hops };
   }
@@ -730,24 +773,34 @@ function Shell() {
               style={{ width: 160 }}
               size="small"
             />
-          ) : (
+          ) : cmdKind === 'arpscan' ? null : (
             <>
               <Select
-                placeholder={t('cmd.target')}
-                style={{ width: 130 }}
+                placeholder={
+                  cmdKind === 'dns' ? t('cmd.dnsServer')
+                  : cmdKind === 'dhcp' ? t('cmd.dhcpServer')
+                  : t('cmd.target')
+                }
+                style={{ width: 140 }}
                 value={dstId}
                 onChange={(v) => setDstId(v)}
-                options={nodes.filter((n) => n.id !== srcId).map((n) => ({ value: n.id, label: n.data.label }))}
+                options={
+                  cmdKind === 'dns'
+                    ? nodes.filter((n) => n.data.kind === 'dnsserver').map((n) => ({ value: n.id, label: n.data.label }))
+                    : cmdKind === 'dhcp'
+                      ? nodes.filter((n) => n.data.kind === 'dhcpserver').map((n) => ({ value: n.id, label: n.data.label }))
+                      : nodes.filter((n) => n.id !== srcId).map((n) => ({ value: n.id, label: n.data.label }))
+                }
                 size="small"
               />
-              {(cmdKind === 'tcp' || cmdKind === 'ftp') && (
+              {(cmdKind === 'tcp' || cmdKind === 'ftp' || cmdKind === 'telnet') && (
                 <Input
                   value={targetPort}
                   onChange={(e) => setTargetPort(e.target.value)}
-                  placeholder={cmdKind === 'ftp' ? '21' : '8080'}
+                  placeholder={cmdKind === 'ftp' ? '21' : cmdKind === 'telnet' ? '23' : '8080'}
                   style={{ width: 70 }}
                   size="small"
-                  addonBefore={cmdKind === 'ftp' ? 'FTP' : 'Port'}
+                  addonBefore={cmdKind === 'telnet' ? 'Telnet' : cmdKind === 'ftp' ? 'FTP' : 'Port'}
                 />
               )}
             </>
