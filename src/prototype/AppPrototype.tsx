@@ -675,7 +675,17 @@ function Shell() {
     setTracePkts([]);
     setDetails([]);
     setTraceOpen(true);
-    void runLoop();
+    // 播放第一跳后自动暂停，让用户可以用单步或恢复控制后续
+    void (async () => {
+      await animateNextHop();
+      if (simStateRef.current === 'running' && simRef.current && simRef.current.index < simRef.current.hops.length) {
+        simStateRef.current = 'paused';
+        setSimState('paused');
+      } else if (simRef.current && simRef.current.index >= simRef.current.hops.length) {
+        simStateRef.current = 'finished';
+        setSimState('finished');
+      }
+    })();
   }
 
   function pauseSim() {
