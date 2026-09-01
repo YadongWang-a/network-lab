@@ -359,7 +359,7 @@ function Shell() {
   const [url, setUrl] = useState('www.example.com');
   const [terminals, setTerminals] = useState<Array<{ id: number; label: string; ip: string; x: number; y: number; lines: string[]; input: string }>>([]);
   const [leaseWin, setLeaseWin] = useState<{ x: number; y: number; label: string } | null>(null);
-  const [vizDots, setVizDots] = useState<Array<{ id: number; x: number; y: number; hex: string }>>([]);
+  const [vizDots, setVizDots] = useState<Array<{ id: number; x: number; y: number; hex: string; seq: number }>>([]);
   const [flashEdgeId, setFlashEdgeId] = useState<string | null>(null);
   const [animBusy, setAnimBusy] = useState(false);
   const vizSeq = useRef(0);
@@ -544,14 +544,14 @@ function Shell() {
     return { x: r.x + r.width / 2 - cr.x, y: r.y + r.height / 2 - cr.y };
   }
 
-  async function animateHop(hop: { fromId: string; toId: string; proto: string }) {
+  async function animateHop(hop: { fromId: string; toId: string; proto: string }, seq: number) {
     const a = nodeCenterOnScreen(hop.fromId);
     const b = nodeCenterOnScreen(hop.toId);
     if (!a || !b) return;
     const hex = viz.colorOf(hop.proto).hex;
     vizSeq.current += 1;
     const dotId = vizSeq.current;
-    setVizDots((ds) => [...ds, { id: dotId, x: a.x, y: a.y, hex }]);
+    setVizDots((ds) => [...ds, { id: dotId, x: a.x, y: a.y, hex, seq }]);
     const steps = 12;
     for (let i = 1; i <= steps; i++) {
       await waitMs(40);
@@ -565,7 +565,7 @@ function Shell() {
   function replayHop(row: TraceRow) {
     const fromId = row.fromId ?? nodes.find((n) => n.data.ip === row.src)?.id;
     const toId = row.toId ?? nodes.find((n) => n.data.ip === row.dst)?.id;
-    if (fromId && toId) void animateHop({ fromId, toId, proto: row.proto });
+    if (fromId && toId) void animateHop({ fromId, toId, proto: row.proto }, 1);
   }
 
   async function playSequence(rows: TraceRow[], pkts: Packet[], hops: Array<{ fromId: string; toId: string; proto: string }>) {
@@ -576,7 +576,7 @@ function Shell() {
     setAnimBusy(true);
     setTraceOpen(true);
     for (let i = 0; i < hops.length; i++) {
-      await animateHop(hops[i]);
+      await animateHop(hops[i], i + 1);
       // B：到达闪烁
       const eid = edges.find((e) => (e.source === hops[i].fromId && e.target === hops[i].toId) || (e.source === hops[i].toId && e.target === hops[i].fromId))?.id;
       if (eid) {
@@ -723,11 +723,16 @@ function Shell() {
                 key={d.id}
                 className="viz-dot"
                 style={{
-                  position: 'absolute', left: d.x - 8, top: d.y - 8, width: 16, height: 16,
+                  position: 'absolute', left: d.x - 10, top: d.y - 10, width: 20, height: 20,
                   borderRadius: '50%', background: d.hex, border: '2px solid #fff',
                   boxShadow: '0 1px 6px rgba(0,0,0,0.35)', zIndex: 30, pointerEvents: 'none',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
                 }}
-              />
+              >
+                <span style={{ fontSize: 10, fontWeight: 700, color: '#fff', lineHeight: 1 }}>
+                  {d.seq}
+                </span>
+              </div>
             ))}
 
             {/* 设备图标条：悬浮于画布底部、水平居中（不分组，原版图标与顺序） */}

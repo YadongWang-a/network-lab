@@ -2,7 +2,7 @@
 id: WF-5
 title: 报文可视化可扩展架构
 type: grilling
-status: open
+status: closed
 assignee: "main"
 blocked_by: []
 blocks: []
@@ -64,3 +64,14 @@ interface ProtocolViz {
 - 已落地（commit f2a8b97 + 本 ticket）：色码注册表独立模块 `src/visualization/registry.ts`；原型通用报文标记动画（沿线移动 + 到达闪烁）；追踪栏 Tag 色码；演示命令面板驱动。
 - 待实施（排入 WF-14 迁移计划）：`simEventToViz` 事件接线（现在演示序列绕过引擎）、VizLayer 组件、`match`/`animate` 钩子启用、色码配置接入 `config.viz.colors`、原版 `firewall-block` 动画并入事件流。
 - 原版参考对照：`movePacket` 的 SVG png 图标（`assets/packets/{type}.png`）→ 新架构统一为注册表色码 + 通用标记；原版暂停/速度全局变量 → store 意图态；原版 processor 内联可视化 → 事件订阅。
+
+## Resolution（续：用户确认 2026-09-01）
+
+续票（与远端并行会话合并后重开）——报文标记加序号 + 色码丰富 + 连线模式改拖拽式：
+
+- **色码丰富**：ARP 从 geekblue 改洋红 `#eb2f96`，HTTP 从蓝（与 Unicast 重复）改金 `#faad14`——8 种协议色互不重叠。
+- **报文标记序号**：`vizDots` 增加 `seq` 字段；`playSequence` 按 hop 顺序传入 `i+1`；标记渲染为 20px 色圆内嵌白色加粗序号，与右侧轨迹列表逐行对应。
+- **连线交互**：弃三步点击式，改为悬停设备 → 四边蓝点（始终挂载、hover 控显隐）→ 按住拖到目标松手即连（loose 模式 + connectionRadius 80）。
+- **抽屉可编辑**：配置抽屉支持修改名称/IP/掩码/网关/IPv4 转发 → 保存写回节点（名牌实时更新）；终端按钮不再误弹抽屉。
+
+全部经无头 Edge + puppeteer-core 端到端实测通过。
