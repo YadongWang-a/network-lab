@@ -34,6 +34,7 @@ status: open
 - **[画布 PoC = React Flow 已验证]**（WF-4 已决）— 滚轮缩放/拖拽平移/控件/节点拖动/拉线/拖放全成立；Handle 置节点中心、直线中心连线。与 WF-9 同产物。
 - **[i18n = react-i18next 已落地]**（WF-8 已决）— 全部界面文案进 zh/en locale（~110 key），中文默认；协议/命令名保留原文；main.tsx 初始化顺序修正。实测通过。
 - **[报文可视化 = 事件驱动两级架构]**（WF-5 已决）— 引擎单向发事件（`SimulationEngine.on`），可视化层 `simEventToViz` 纯函数翻译为动画动作；`ProtocolViz` 插件（id/label/color + match/animate 钩子）静态装配进 `VizRegistry`，色码为可配置元数据；store 只存意图态（开关/速度/暂停/报文历史），动画帧为组件 ephemeral；画布几何经适配器解耦。落点 `src/visualization/registry.ts`（已抽离，原型已改用），事件接线/钩子排 WF-14。解锁 WF-12（可视化单测）、WF-14。
+- **[设备级自动配置 IPAM = 子网池 + 网关惯例]**（WF-6 已决）— `src/domain/ipam.ts` 纯函数子网池（默认 192.168.1.0/24、10.0.0.0/24、172.16.0.0/24）；路由器每接口占一子网网关 .1（被占顺延下一空闲主机），终端设备从 .2 起分配；DHCP 服务器自动生成服务范围 .100–.254；「已占用」集合由拓扑扫描得出（冲突检测），手动覆盖（updateInterface）后后续分配自动跳过；池耗尽抛中文错误。`store.addDevice` 自动接入，原型拖放同源（`src/domain/deviceFactory.ts`）。解锁 WF-7（复用 ipam 纯计算）。
 
 ## Not yet specified（fog）
 

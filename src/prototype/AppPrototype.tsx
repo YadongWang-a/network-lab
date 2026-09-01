@@ -26,6 +26,7 @@ import {
 import { FolderOpenOutlined, PlusOutlined, CaretRightOutlined, CodeOutlined, TableOutlined, RightOutlined, LeftOutlined, PauseCircleOutlined, StepForwardOutlined } from '@ant-design/icons';
 import zhCN from 'antd/locale/zh_CN';
 import type { Layer, Packet } from '@/domain/types';
+import { DEFAULT_SUBNETS, SubnetPool } from '@/domain/ipam';
 import { viz } from '@/visualization/registry';
 import {
   ReactFlow,
@@ -382,17 +383,50 @@ function Shell() {
     const kind = e.dataTransfer.getData('text/plain') as Kind;
     if (!(kind in boardIcon)) return;
     const pos = screenToFlowPosition({ x: e.clientX, y: e.clientY });
+    // 序号自增直到不与现有节点 id 冲突（种子数据已占用 pc-1 等）
     seq.current += 1;
-    const id = `${kind}-${seq.current}`;
-    setNodes((nds) => [
-      ...nds,
-      {
-        id,
-        type: 'device',
-        position: { x: pos.x - 40, y: pos.y - 40 },
-        data: { kind, label: id, ip: kind === 'switch' ? '—' : t('device.unconfigured'), netmask: '255.255.255.0', gateway: '', ipv4Forwarding: false },
-      },
-    ]);
+    let id = `${kind}-${seq.current}`;
+    while (nodes.some((n) => n.id === id)) {
+      seq.current += 1;
+      id = `${kind}-${seq.current}`;
+    }
+    // —— WF-6：拖入设备即自动分配 IP / 掩码 / 网关（与 store.addDevice 同一分配模块）——
+    // 在 setNodes 更新器内用最新节点列表计算占用，避免连丢时读到过期闭包。
+    setNodes((nds) => {
+      const unconfigured = t('device.unconfigured');
+      const used = new Set(
+        nds
+          .filter((n) => n.data.ip !== '—' && n.data.ip !== unconfigured)
+          .map((n) => n.data.ip),
+      );
+      const pool = new SubnetPool(DEFAULT_SUBNETS);
+      let ip = '—';
+      let netmask = '';
+      let gateway = '';
+      if (kind === 'router') {
+        const a = pool.allocateRouterInterface(0, used);
+        if (a) {
+          ip = a.ip;
+          netmask = a.netmask;
+        }
+      } else if (kind !== 'switch' && kind !== 'annotation') {
+        const a = pool.allocateEndDevice(used);
+        if (a) {
+          ip = a.ip;
+          netmask = a.netmask;
+          gateway = a.gateway ?? '';
+        }
+      }
+      return [
+        ...nds,
+        {
+          id,
+          type: 'device',
+          position: { x: pos.x - 40, y: pos.y - 40 },
+          data: { kind, label: id, ip, netmask, gateway, ipv4Forwarding: kind === 'router' },
+        },
+      ];
+    });
   }
 
   // 拖拽侧边栏左缘调宽（280–640px）
