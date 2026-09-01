@@ -5,6 +5,8 @@
   "canvas.connectMode": "连线模式：点击起点设备，再点终点设备",
   "canvas.pickSource": "点击起点设备 (A)",
   "canvas.pickTarget": "点击终点设备 (B)",
+  "nav.open": "打开",
+  "nav.openTooltip": "打开网络文件（原型未实现）",
   "nav.new": "新建拓扑",
   "panel.pc": "PC 主机",
   "panel.router": "路由器",

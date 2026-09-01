@@ -6,6 +6,8 @@
   "canvas.pickSource": "Click source device (A)",
   "canvas.pickTarget": "Click target device (B)",
   "nav.openTooltip": "Open network file (not implemented in prototype)",
+  "nav.open": "Open",
+  "nav.openTooltip": "Open network file (not implemented in prototype)",
   "nav.new": "New Topology",
   "panel.pc": "PC",
   "panel.router": "Router",
