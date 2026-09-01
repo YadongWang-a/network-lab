@@ -302,7 +302,7 @@ const seedEdges: Edge[] = [
 const edgeStyle = { stroke: '#5a7d7c', strokeWidth: 2 };
 const edgeFlashStyle = { stroke: '#fa8c16', strokeWidth: 4 };
 
-type CmdKind = 'ping' | 'tcp' | 'http';
+type CmdKind = 'ping' | 'tcp' | 'http' | 'ftp';
 
 function macOf(i: number): string {
   return `aa:bb:cc:dd:ee:${(i + 1).toString(16).padStart(2, '0')}`;
@@ -324,6 +324,7 @@ const cmdOptions: Array<{ value: CmdKind; labelKey: string }> = [
   { value: 'ping', labelKey: 'cmd.ping' },
   { value: 'tcp', labelKey: 'cmd.tcp' },
   { value: 'http', labelKey: 'cmd.http' },
+  { value: 'ftp', labelKey: 'cmd.ftp' },
 ];
 
 // 画布背景：白底 + 青色 10px 网格（原 .board 参数）
@@ -357,6 +358,7 @@ function Shell() {
   const [dstId, setDstId] = useState<string | undefined>();
   const [cmdKind, setCmdKind] = useState<CmdKind>('ping');
   const [url, setUrl] = useState('www.example.com');
+  const [targetPort, setTargetPort] = useState('80');
   const [terminals, setTerminals] = useState<Array<{ id: number; label: string; ip: string; x: number; y: number; lines: string[]; input: string }>>([]);
   const [leaseWin, setLeaseWin] = useState<{ x: number; y: number; label: string } | null>(null);
   const [vizDots, setVizDots] = useState<Array<{ id: number; x: number; y: number; hex: string; seq: number }>>([]);
@@ -729,14 +731,26 @@ function Shell() {
               size="small"
             />
           ) : (
-            <Select
-              placeholder={t('cmd.target')}
-              style={{ width: 130 }}
-              value={dstId}
-              onChange={(v) => setDstId(v)}
-              options={nodes.filter((n) => n.id !== srcId).map((n) => ({ value: n.id, label: n.data.label }))}
-              size="small"
-            />
+            <>
+              <Select
+                placeholder={t('cmd.target')}
+                style={{ width: 130 }}
+                value={dstId}
+                onChange={(v) => setDstId(v)}
+                options={nodes.filter((n) => n.id !== srcId).map((n) => ({ value: n.id, label: n.data.label }))}
+                size="small"
+              />
+              {(cmdKind === 'tcp' || cmdKind === 'ftp') && (
+                <Input
+                  value={targetPort}
+                  onChange={(e) => setTargetPort(e.target.value)}
+                  placeholder={cmdKind === 'ftp' ? '21' : '8080'}
+                  style={{ width: 70 }}
+                  size="small"
+                  addonBefore={cmdKind === 'ftp' ? 'FTP' : 'Port'}
+                />
+              )}
+            </>
           )}
           <div style={{ flex: 1 }} />
           {simState === 'idle' || simState === 'finished' ? (
