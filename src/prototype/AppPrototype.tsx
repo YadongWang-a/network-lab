@@ -26,6 +26,7 @@ import {
 import { FolderOpenOutlined, PlusOutlined, CaretRightOutlined, CodeOutlined, TableOutlined, RightOutlined, LeftOutlined } from '@ant-design/icons';
 import zhCN from 'antd/locale/zh_CN';
 import type { Layer, Packet } from '@/domain/types';
+import { viz } from '@/visualization/registry';
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -103,27 +104,13 @@ const panelItems: PanelItem[] = [
   { key: 'hide', icon: 'hide-panel.svg', tipKey: 'panel.hide', tool: 'hide' },
 ];
 
-// —— 协议可视化注册表（WF-5）：轨迹 Tag 色码与画布动画共用 ——
-interface VizEntry { tag: string; hex: string }
-const vizRegistry: Record<string, VizEntry> = {
-  unicast: { tag: 'blue', hex: '#1677ff' },
-  arp: { tag: 'geekblue', hex: '#2f54eb' },
-  icmp: { tag: 'green', hex: '#52c41a' },
-  dns: { tag: 'purple', hex: '#722ed1' },
-  dhcp: { tag: 'orange', hex: '#fa8c16' },
-  tcp: { tag: 'cyan', hex: '#13c2c2' },
-  broadcast: { tag: 'red', hex: '#f5222d' },
-  http: { tag: 'blue', hex: '#1677ff' },
-};
-
-function vizOf(proto: string): VizEntry {
-  return vizRegistry[proto] ?? { tag: 'default', hex: '#8c8c8c' };
-}
-
+// —— 协议可视化注册表（WF-5）：色码元数据已抽离至 src/visualization/registry.ts ——
 const waitMs = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 interface TraceRow {
   key: string; time: string; proto: string; src: string; dst: string; info: string;
+  /** 报文经过的设备节点（演示命令直接记录；示例数据由 IP 反查）。点击行时重放对应动画。 */
+  fromId?: string; toId?: string;
 }
 
 const traceData: TraceRow[] = [
@@ -561,7 +548,7 @@ function Shell() {
     const a = nodeCenterOnScreen(hop.fromId);
     const b = nodeCenterOnScreen(hop.toId);
     if (!a || !b) return;
-    const hex = vizRegistry[hop.proto]?.hex ?? vizOf(hop.proto).hex;
+    const hex = viz.colorOf(hop.proto).hex;
     vizSeq.current += 1;
     const dotId = vizSeq.current;
     setVizDots((ds) => [...ds, { id: dotId, x: a.x, y: a.y, hex }]);
@@ -573,7 +560,19 @@ function Shell() {
     setVizDots((ds) => ds.filter((d) => d.id !== dotId));
   }
 
+  // 点击追踪行：重放该报文对应的画布动画（WF-5 续）。演示命令行直接用记录的节点；
+  // 示例数据行（无 fromId/toId）按 src/dst IP 反查拓扑节点，两端齐全才重放。
+  function replayHop(row: TraceRow) {
+    const fromId = row.fromId ?? nodes.find((n) => n.data.ip === row.src)?.id;
+    const toId = row.toId ?? nodes.find((n) => n.data.ip === row.dst)?.id;
+    if (fromId && toId) void animateHop({ fromId, toId, proto: row.proto });
+  }
+
   async function playSequence(rows: TraceRow[], pkts: Packet[], hops: Array<{ fromId: string; toId: string; proto: string }>) {
+    // 每次执行新命令：清空旧追踪行/报文与详情悬浮窗（Reopen issue）
+    setTraces([]);
+    setTracePkts([]);
+    setDetails([]);
     setAnimBusy(true);
     setTraceOpen(true);
     for (let i = 0; i < hops.length; i++) {
@@ -604,14 +603,14 @@ function Shell() {
       ? '93.184.216.34'
       : (dst!.data.ip === '—' || dst!.data.ip === t('device.unconfigured') ? sip : dst!.data.ip);
     const dmac = dst ? macOf(nodes.findIndex((n) => n.id === dstId)) : macOf(63);
-    let time = traces.length ? parseFloat(traces[traces.length - 1].time) + 0.001 : 0.001;
+    let time = 0.001;
     const rows: TraceRow[] = [];
     const pkts: Packet[] = [];
     const hops: Array<{ fromId: string; toId: string; proto: string }> = [];
     const srcNodeId = src.id;
     const dstNodeId = dst ? dst.id : src.id;
     function add(proto: string, s: string, d: string, info: string, packet: Packet, fromId: string, toId: string) {
-      rows.push({ key: `c-${traces.length + rows.length}-${Date.now()}`, time: time.toFixed(3), proto, src: s, dst: d, info });
+      rows.push({ key: `c-${Date.now()}-${rows.length}`, time: time.toFixed(3), proto, src: s, dst: d, info, fromId, toId });
       pkts.push(packet);
       hops.push({ fromId, toId, proto });
       time += 0.001;
@@ -816,11 +815,11 @@ function Shell() {
                     dataSource={traces}
                     renderItem={(row, index) => (
                       <List.Item
-                        onClick={() => openDetail(row, index)}
+                        onClick={() => { openDetail(row, index); replayHop(row); }}
                         style={{ display: 'block', padding: '6px 4px', cursor: 'pointer' }}
                       >
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <Tag color={vizOf(row.proto).tag} style={{ marginInlineEnd: 0 }}>
+                          <Tag color={viz.colorOf(row.proto).tag} style={{ marginInlineEnd: 0 }}>
                             {row.proto.toUpperCase()}
                           </Tag>
                           <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
