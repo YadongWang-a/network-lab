@@ -694,7 +694,20 @@ function Shell() {
   }
 
   async function stepSim() {
-    if (simStateRef.current !== 'paused' || !simRef.current) return;
+    if (simState === 'finished') return;
+    if (simState === 'idle') {
+      // 空闲：构建序列 + 播放第一跳 + 自动暂停
+      startSim();
+      return;
+    }
+    if (simState === 'running') {
+      // 正在运行：先暂停再走一跳
+      simStateRef.current = 'paused';
+      setSimState('paused');
+      return;
+    }
+    // paused：走一跳
+    if (!simRef.current) return;
     await animateNextHop();
     if (simRef.current.index >= simRef.current.hops.length) {
       simStateRef.current = 'finished';
@@ -815,26 +828,18 @@ function Shell() {
               )}
             </>
           )}
-          <div style={{ flex: 1 }} />
-          {simState === 'idle' || simState === 'finished' ? (
-            <Button type="primary" size="small" icon={<CaretRightOutlined />} onClick={startSim}>
-              {t('sim.start')}
-            </Button>
-          ) : simState === 'running' ? (
-            <Button size="small" icon={<PauseCircleOutlined />} onClick={pauseSim}>
-              {t('sim.pause')}
-            </Button>
-          ) : null}
-          {simState === 'paused' && (
-            <>
-              <Button size="small" icon={<StepForwardOutlined />} onClick={stepSim}>
-                {t('sim.step')}
-              </Button>
-              <Button type="primary" size="small" icon={<CaretRightOutlined />} onClick={resumeSim}>
-                {t('sim.resume')}
-              </Button>
-            </>
-          )}
+          <Button size="small" type="primary" icon={<CaretRightOutlined />} onClick={startSim} disabled={simState === 'running' || simState === 'paused'}>
+            {t('sim.start')}
+          </Button>
+          <Button size="small" icon={<PauseCircleOutlined />} onClick={pauseSim} disabled={simState !== 'running'}>
+            {t('sim.pause')}
+          </Button>
+          <Button size="small" icon={<StepForwardOutlined />} onClick={stepSim} disabled={simState === 'running' || simState === 'finished'}>
+            {t('sim.step')}
+          </Button>
+          <Button size="small" type="primary" icon={<CaretRightOutlined />} onClick={resumeSim} disabled={simState !== 'paused'}>
+            {t('sim.resume')}
+          </Button>
         </div>
 
         {/* —— 内容区：左画布 + 右报文追踪 —— */}
