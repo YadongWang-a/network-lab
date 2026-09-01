@@ -23,7 +23,7 @@ import {
   Card,
   Space,
 } from 'antd';
-import { FolderOpenOutlined, PlusOutlined, CaretRightOutlined, CodeOutlined, TableOutlined, RightOutlined, LeftOutlined } from '@ant-design/icons';
+import { FolderOpenOutlined, PlusOutlined, CaretRightOutlined, CodeOutlined, TableOutlined, RightOutlined, LeftOutlined, PauseCircleOutlined, StepForwardOutlined } from '@ant-design/icons';
 import zhCN from 'antd/locale/zh_CN';
 import type { Layer, Packet } from '@/domain/types';
 import { viz } from '@/visualization/registry';
@@ -98,7 +98,6 @@ const panelItems: PanelItem[] = [
   { key: 'apache2', icon: 'apache2.svg', tipKey: 'panel.apache2', drag: true },
   { key: 'annotation', icon: 'annotation.svg', tipKey: 'panel.annotation', drag: true },
   { key: 'traffic', icon: 'traffic.svg', tipKey: 'panel.traffic', tool: 'traffic' },
-  { key: 'cmd', icon: 'bus.svg', tipKey: 'panel.cmd', tool: 'cmd' },
   { key: 'animation', icon: 'animationControls.svg', tipKey: 'panel.animation', tool: 'animation' },
   { key: 'settings', icon: 'settings.svg', tipKey: 'panel.settings', tool: 'settings' },
   { key: 'hide', icon: 'hide-panel.svg', tipKey: 'panel.hide', tool: 'hide' },
@@ -108,17 +107,17 @@ const panelItems: PanelItem[] = [
 const waitMs = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 interface TraceRow {
-  key: string; time: string; proto: string; src: string; dst: string; info: string;
+  key: string; seq: number; time: string; proto: string; src: string; dst: string; info: string;
   /** 报文经过的设备节点（演示命令直接记录；示例数据由 IP 反查）。点击行时重放对应动画。 */
   fromId?: string; toId?: string;
 }
 
 const traceData: TraceRow[] = [
-  { key: '1', time: '0.001', proto: 'arp', src: '192.168.1.10', dst: '?', info: i18n.t('gen.arpWho', { dst: '192.168.1.1', src: '192.168.1.10' }) },
-  { key: '2', time: '0.002', proto: 'arp', src: '192.168.1.1', dst: '192.168.1.10', info: i18n.t('gen.arpAt', { ip: '192.168.1.1', mac: 'aa:bb:cc:dd:ee:01' }) },
-  { key: '3', time: '0.004', proto: 'icmp', src: '192.168.1.10', dst: '192.168.1.1', info: i18n.t('gen.echoReq') },
-  { key: '4', time: '0.005', proto: 'icmp', src: '192.168.1.1', dst: '192.168.1.10', info: i18n.t('gen.echoReply') },
-  { key: '5', time: '0.020', proto: 'dhcp', src: '0.0.0.0', dst: '255.255.255.255', info: 'DHCP Discover' },
+  { key: '1', seq: 1, time: '0.001', proto: 'arp', src: '192.168.1.10', dst: '?', info: i18n.t('gen.arpWho', { dst: '192.168.1.1', src: '192.168.1.10' }) },
+  { key: '2', seq: 2, time: '0.002', proto: 'arp', src: '192.168.1.1', dst: '192.168.1.10', info: i18n.t('gen.arpAt', { ip: '192.168.1.1', mac: 'aa:bb:cc:dd:ee:01' }) },
+  { key: '3', seq: 3, time: '0.004', proto: 'icmp', src: '192.168.1.10', dst: '192.168.1.1', info: i18n.t('gen.echoReq') },
+  { key: '4', seq: 4, time: '0.005', proto: 'icmp', src: '192.168.1.1', dst: '192.168.1.10', info: i18n.t('gen.echoReply') },
+  { key: '5', seq: 5, time: '0.020', proto: 'dhcp', src: '0.0.0.0', dst: '255.255.255.255', info: 'DHCP Discover' },
 ];
 
 // 示例报文（WF-2 层栈模型）：供"报文详情"悬浮窗逐层展示
@@ -351,8 +350,9 @@ function Shell() {
   const termSeq = useRef(0);
   const [traces, setTraces] = useState<TraceRow[]>(traceData);
   const [tracePkts, setTracePkts] = useState<Packet[]>(tracePackets);
-  const [cmdOpen, setCmdOpen] = useState(false);
-  const [cmdPos, setCmdPos] = useState({ x: 140, y: 90 });
+  const [simState, setSimState] = useState<'idle' | 'running' | 'paused' | 'finished'>('idle');
+  const simStateRef = useRef<'idle' | 'running' | 'paused' | 'finished'>('idle');
+  const simRef = useRef<{ rows: TraceRow[]; pkts: Packet[]; hops: Array<{ fromId: string; toId: string; proto: string }>; index: number } | null>(null);
   const [srcId, setSrcId] = useState<string | undefined>();
   const [dstId, setDstId] = useState<string | undefined>();
   const [cmdKind, setCmdKind] = useState<CmdKind>('ping');
@@ -361,7 +361,6 @@ function Shell() {
   const [leaseWin, setLeaseWin] = useState<{ x: number; y: number; label: string } | null>(null);
   const [vizDots, setVizDots] = useState<Array<{ id: number; x: number; y: number; hex: string; seq: number }>>([]);
   const [flashEdgeId, setFlashEdgeId] = useState<string | null>(null);
-  const [animBusy, setAnimBusy] = useState(false);
   const vizSeq = useRef(0);
   const seq = useRef(0);
   const { screenToFlowPosition } = useReactFlow();
@@ -445,24 +444,6 @@ function Shell() {
     window.addEventListener('mouseup', onUp);
   }
 
-  // 拖拽演示命令面板
-  function startDragCmd(e: React.MouseEvent) {
-    e.preventDefault();
-    const startX = e.clientX;
-    const startY = e.clientY;
-    const { x, y } = cmdPos;
-    function onMove(ev: MouseEvent) {
-      setCmdPos({ x: x + ev.clientX - startX, y: y + ev.clientY - startY });
-    }
-    function onUp() {
-      document.body.style.userSelect = '';
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
-    }
-    document.body.style.userSelect = 'none';
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
-  }
 
   // 打开设备终端悬浮窗（可同时多个）
   function openTerminal(label: string, ip: string) {
@@ -568,40 +549,15 @@ function Shell() {
     if (fromId && toId) void animateHop({ fromId, toId, proto: row.proto }, 1);
   }
 
-  async function playSequence(rows: TraceRow[], pkts: Packet[], hops: Array<{ fromId: string; toId: string; proto: string }>) {
-    // 每次执行新命令：清空旧追踪行/报文与详情悬浮窗（Reopen issue）
-    setTraces([]);
-    setTracePkts([]);
-    setDetails([]);
-    setAnimBusy(true);
-    setTraceOpen(true);
-    for (let i = 0; i < hops.length; i++) {
-      await animateHop(hops[i], i + 1);
-      // B：到达闪烁
-      const eid = edges.find((e) => (e.source === hops[i].fromId && e.target === hops[i].toId) || (e.source === hops[i].toId && e.target === hops[i].fromId))?.id;
-      if (eid) {
-        setFlashEdgeId(eid);
-        await waitMs(320);
-        setFlashEdgeId(null);
-      }
-      setTraces((ts) => [...ts, rows[i]]);
-      setTracePkts((ps) => [...ps, pkts[i]]);
-    }
-    setAnimBusy(false);
-  }
-
-  // 执行演示命令：生成报文序列 → 报文沿线流动 → 轨迹同步增长
-  function runCommand() {
-    if (animBusy) return;
+  // —— WF-3 仿真控制器：开始 / 暂停 / 单步 / 恢复 ——
+  function buildSequence(): { rows: TraceRow[]; pkts: Packet[]; hops: Array<{ fromId: string; toId: string; proto: string }> } | null {
     const src = nodes.find((n) => n.id === srcId);
-    if (!src) return;
+    if (!src) return null;
     const dst = nodes.find((n) => n.id === dstId);
-    if (cmdKind !== 'http' && !dst) return;
+    if (cmdKind !== 'http' && !dst) return null;
     const smac = macOf(nodes.findIndex((n) => n.id === srcId));
     const sip = src.data.ip === '—' || src.data.ip === t('device.unconfigured') ? '0.0.0.0' : src.data.ip;
-    const dip = cmdKind === 'http'
-      ? '93.184.216.34'
-      : (dst!.data.ip === '—' || dst!.data.ip === t('device.unconfigured') ? sip : dst!.data.ip);
+    const dip = cmdKind === 'http' ? '93.184.216.34' : (dst!.data.ip === '—' || dst!.data.ip === t('device.unconfigured') ? sip : dst!.data.ip);
     const dmac = dst ? macOf(nodes.findIndex((n) => n.id === dstId)) : macOf(63);
     let time = 0.001;
     const rows: TraceRow[] = [];
@@ -610,7 +566,7 @@ function Shell() {
     const srcNodeId = src.id;
     const dstNodeId = dst ? dst.id : src.id;
     function add(proto: string, s: string, d: string, info: string, packet: Packet, fromId: string, toId: string) {
-      rows.push({ key: `c-${Date.now()}-${rows.length}`, time: time.toFixed(3), proto, src: s, dst: d, info, fromId, toId });
+      rows.push({ key: `c-${Date.now()}-${rows.length}`, seq: rows.length + 1, time: time.toFixed(3), proto, src: s, dst: d, info, fromId, toId });
       pkts.push(packet);
       hops.push({ fromId, toId, proto });
       time += 0.001;
@@ -635,7 +591,66 @@ function Shell() {
       add('http', sip, dip, i18n.t('gen.get', { url }), mkPacket([ethLayer(dmac, smac), ipLayer(sip, dip, 'tcp'), tcpLayer(49152, 80, 1001, 3001, false, true), { kind: 'http', method: 'GET', host: url, path: '/' }]), srcNodeId, dstNodeId);
       add('http', dip, sip, i18n.t('gen.ok', { url }), mkPacket([ethLayer(smac, dmac), ipLayer(dip, sip, 'tcp'), tcpLayer(80, 49152, 3001, 1002, false, true), { kind: 'http', status: 200 }]), dstNodeId, srcNodeId);
     }
-    void playSequence(rows, pkts, hops);
+    return { rows, pkts, hops };
+  }
+
+  async function animateNextHop() {
+    const sim = simRef.current;
+    if (!sim || sim.index >= sim.hops.length) return;
+    const hop = sim.hops[sim.index];
+    await animateHop(hop, sim.index + 1);
+    const eid = edges.find((e) => (e.source === hop.fromId && e.target === hop.toId) || (e.source === hop.toId && e.target === hop.fromId))?.id;
+    if (eid) {
+      setFlashEdgeId(eid);
+      await waitMs(320);
+      setFlashEdgeId(null);
+    }
+    setTraces((ts) => [...ts, sim.rows[sim.index]]);
+    setTracePkts((ps) => [...ps, sim.pkts[sim.index]]);
+    sim.index++;
+  }
+
+  async function runLoop() {
+    while (simStateRef.current === 'running' && simRef.current && simRef.current.index < simRef.current.hops.length) {
+      await animateNextHop();
+    }
+    if (simRef.current && simRef.current.index >= simRef.current.hops.length) {
+      simStateRef.current = 'finished';
+      setSimState('finished');
+    }
+  }
+
+  function startSim() {
+    const seq = buildSequence();
+    if (!seq) return;
+    simRef.current = { ...seq, index: 0 };
+    simStateRef.current = 'running';
+    setSimState('running');
+    setTraces([]);
+    setTracePkts([]);
+    setDetails([]);
+    setTraceOpen(true);
+    void runLoop();
+  }
+
+  function pauseSim() {
+    simStateRef.current = 'paused';
+    setSimState('paused');
+  }
+
+  async function stepSim() {
+    if (simStateRef.current !== 'paused' || !simRef.current) return;
+    await animateNextHop();
+    if (simRef.current.index >= simRef.current.hops.length) {
+      simStateRef.current = 'finished';
+      setSimState('finished');
+    }
+  }
+
+  function resumeSim() {
+    simStateRef.current = 'running';
+    setSimState('running');
+    void runLoop();
   }
 
   // 原生 click 监听：节点选择 → 打开配置抽屉（按钮点击已排除）
@@ -680,6 +695,69 @@ function Shell() {
               {t('nav.new')}
             </Button>
           </Space>
+        </div>
+
+        {/* —— 命令面板（固定在画布上方）—— */}
+        <div
+          style={{
+            height: 40, flexShrink: 0, display: 'flex', alignItems: 'center', gap: 8,
+            padding: '0 16px', background: '#fafafa', borderBottom: '1px solid #e5e5e5',
+          }}
+        >
+          <span style={{ fontSize: 12, fontWeight: 600, color: '#666', flexShrink: 0 }}>{t('cmd.title')}</span>
+          <Select
+            style={{ width: 130 }}
+            value={cmdKind}
+            onChange={(v) => setCmdKind(v as CmdKind)}
+            options={cmdOptions.map((o) => ({ value: o.value, label: t(o.labelKey) }))}
+            size="small"
+          />
+          <Select
+            placeholder={t('cmd.src')}
+            style={{ width: 130 }}
+            value={srcId}
+            onChange={(v) => setSrcId(v)}
+            options={nodes.map((n) => ({ value: n.id, label: n.data.label }))}
+            size="small"
+          />
+          {cmdKind === 'http' ? (
+            <Input
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              placeholder={t('cmd.url')}
+              style={{ width: 160 }}
+              size="small"
+            />
+          ) : (
+            <Select
+              placeholder={t('cmd.target')}
+              style={{ width: 130 }}
+              value={dstId}
+              onChange={(v) => setDstId(v)}
+              options={nodes.filter((n) => n.id !== srcId).map((n) => ({ value: n.id, label: n.data.label }))}
+              size="small"
+            />
+          )}
+          <div style={{ flex: 1 }} />
+          {simState === 'idle' || simState === 'finished' ? (
+            <Button type="primary" size="small" icon={<CaretRightOutlined />} onClick={startSim}>
+              {t('sim.start')}
+            </Button>
+          ) : simState === 'running' ? (
+            <Button size="small" icon={<PauseCircleOutlined />} onClick={pauseSim}>
+              {t('sim.pause')}
+            </Button>
+          ) : null}
+          {simState === 'paused' && (
+            <>
+              <Button size="small" icon={<StepForwardOutlined />} onClick={stepSim}>
+                {t('sim.step')}
+              </Button>
+              <Button type="primary" size="small" icon={<CaretRightOutlined />} onClick={resumeSim}>
+                {t('sim.resume')}
+              </Button>
+            </>
+          )}
         </div>
 
         {/* —— 内容区：左画布 + 右报文追踪 —— */}
@@ -754,9 +832,8 @@ function Shell() {
                       onDragStart={it.drag ? (e) => e.dataTransfer.setData('text/plain', it.key) : undefined}
                       onClick={
                         it.tool === 'traffic' ? () => setTraceOpen((v) => !v)
-                          : it.tool === 'cmd' ? () => setCmdOpen((v) => !v)
-                            : it.tool === 'hide' ? () => setPanelOpen(false)
-                              : undefined
+                          : it.tool === 'hide' ? () => setPanelOpen(false)
+                            : undefined
                       }
                       style={{
                         width: 40, height: 40, borderRadius: 6, flexShrink: 0,
@@ -824,6 +901,9 @@ function Shell() {
                         style={{ display: 'block', padding: '6px 4px', cursor: 'pointer' }}
                       >
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <span style={{ flexShrink: 0, fontSize: 11, fontWeight: 700, color: '#8c8c8c', minWidth: 16, textAlign: 'center' }}>
+                            {row.seq}
+                          </span>
                           <Tag color={viz.colorOf(row.proto).tag} style={{ marginInlineEnd: 0 }}>
                             {row.proto.toUpperCase()}
                           </Tag>
@@ -844,55 +924,6 @@ function Shell() {
           )}
         </div>
 
-        {/* 演示命令面板（悬浮、可拖拽） */}
-        {cmdOpen && (
-          <Card
-            size="small"
-            title={
-              <span
-                style={{ cursor: 'move', userSelect: 'none', display: 'block', width: '100%' }}
-                onMouseDown={startDragCmd}
-              >
-                {t('cmd.title')}
-              </span>
-            }
-            extra={<a onClick={() => setCmdOpen(false)}>{t('common.close')}</a>}
-            style={{
-              position: 'fixed', left: cmdPos.x, top: cmdPos.y, width: 360, zIndex: 1002,
-              boxShadow: '0 6px 24px rgba(0,0,0,0.22)',
-            }}
-          >
-            <Space direction="vertical" style={{ width: '100%' }}>
-              <Select
-                placeholder={t('cmd.src')}
-                style={{ width: '100%' }}
-                value={srcId}
-                onChange={(v) => setSrcId(v)}
-                options={nodes.map((n) => ({ value: n.id, label: `${n.data.label}（${t(kindKey[n.data.kind])}）` }))}
-              />
-              <Select
-                style={{ width: '100%' }}
-                value={cmdKind}
-                onChange={(v) => setCmdKind(v as CmdKind)}
-                options={cmdOptions.map((o) => ({ value: o.value, label: t(o.labelKey) }))}
-              />
-              {cmdKind === 'http' ? (
-                <Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder={t('cmd.url')} />
-              ) : (
-                <Select
-                  placeholder={t('cmd.target')}
-                  style={{ width: '100%' }}
-                  value={dstId}
-                  onChange={(v) => setDstId(v)}
-                  options={nodes.filter((n) => n.id !== srcId).map((n) => ({ value: n.id, label: `${n.data.label}（${t(kindKey[n.data.kind])}）` }))}
-                />
-              )}
-              <Button type="primary" icon={<CaretRightOutlined />} onClick={runCommand} disabled={animBusy} block>
-                {t('cmd.run')}
-              </Button>
-            </Space>
-          </Card>
-        )}
       </div>
 
       {/* 设备配置抽屉（点设备弹出；保存写回设备数据） */}
