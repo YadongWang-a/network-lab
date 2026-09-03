@@ -140,5 +140,22 @@
   "gen.ack": "ACK → 连接建立",
   "gen.get": "GET http://{{url}}/",
   "gen.ok": "200 OK（响应 {{url}}）",
-  "common.close": "关闭"
+  "common.close": "关闭",
+  "common.none": "（无）",
+  "drawer.interfaces": "网络接口",
+  "drawer.switchL2": "交换机为二层设备，无 IP / 路由表（连接后经网桥转发）。",
+  "drawer.routingTable": "路由表（自动计算）",
+  "route.net": "目标网络",
+  "route.nextHop": "下一跳",
+  "route.egress": "出接口",
+  "route.direct": "直连",
+  "route.empty": "（暂无：连线后自动计算）",
+  "svc.dhcpd": "DHCP 服务",
+  "svc.named": "DNS 服务 (bind9)",
+  "svc.apache2": "Web 服务 (Apache2)",
+  "svc.dhcrelay": "DHCP 中继",
+  "svc.iptables": "防火墙 (iptables)",
+  "msg.needSwitch": "线缆需一端为设备接口、另一端为交换机",
+  "msg.noFreeIface": "{{label}} 的所有接口已连接，请先断开再连线",
+  "msg.saved": "已保存"
 }

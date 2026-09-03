@@ -141,5 +141,22 @@
   "gen.ack": "ACK → connection established",
   "gen.get": "GET http://{{url}}/",
   "gen.ok": "200 OK (response for {{url}})",
-  "common.close": "Close"
+  "common.close": "Close",
+  "common.none": "(none)",
+  "drawer.interfaces": "Network Interfaces",
+  "drawer.switchL2": "Switch is a Layer-2 device — no IP / routing table (forwards via bridge).",
+  "drawer.routingTable": "Routing Table (auto)",
+  "route.net": "Destination Network",
+  "route.nextHop": "Next Hop",
+  "route.egress": "Egress",
+  "route.direct": "Direct",
+  "route.empty": "(none — computed after cabling)",
+  "svc.dhcpd": "DHCP Server",
+  "svc.named": "DNS Service (bind9)",
+  "svc.apache2": "Web Server (Apache2)",
+  "svc.dhcrelay": "DHCP Relay",
+  "svc.iptables": "Firewall (iptables)",
+  "msg.needSwitch": "Cable must link a device interface to a switch",
+  "msg.noFreeIface": "All interfaces of {{label}} are connected — disconnect first",
+  "msg.saved": "Saved"
 }

@@ -1,13 +1,17 @@
 /*
- * PROTOTYPE — 非生产代码（WF-9 UI 原型 + WF-8 i18n + WF-5 可视化）。
- * 布局：顶部标题栏 + [左画布 | 右报文追踪栏]；设备图标条悬浮于画布底部居中（不分组）。
- * 画布复刻原版（React Flow）：白底 #A0E7E5 网格、原版 SVG 图标、缩放/平移、拖放设备、
- * 悬停四边蓝点拖拽连线、设备名牌、悬停操作按钮（终端/租约）、命令面板驱动报文流动动画。
- * 全部界面文案接入 react-i18next（中文默认）。真实实现由 WF-4/WF-5/正式实现替换本文件。
+ * 应用 UI 壳（源自 WF-9 原型；WF-15 M1 后拓扑数据流已入库）。
+ * - 拓扑单一事实源 = `store.topology`：画布节点/边是其投影；拖放建设备、拉线、编辑、
+ *   拖动位置、删除一律经 store 动作写回（WF-6 自动分配 / WF-7 自动路由随之生效）。
+ * - 连线语义：线缆一端为设备接口、另一端为交换机（WF-14 决策）；路由器多接口按空闲
+ *   顺序接线（enp0s3 → enp0s8 → enp0s9）。
+ * - 仿真仍为原型假引擎（buildSequence + waitMs 本地定时），由 WF-16 换为真实
+ *   SimulationEngine；报文追踪/悬浮窗/动画为 UI 壳，形态保留。
+ * - 全部界面文案接入 react-i18next（中文默认）。
  */
-import { createContext, useContext, useEffect, useRef, useState } from 'react';
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
+  App as AntApp,
   ConfigProvider,
   Tooltip,
   Drawer,
@@ -25,8 +29,8 @@ import {
 } from 'antd';
 import { FolderOpenOutlined, PlusOutlined, CaretRightOutlined, CodeOutlined, TableOutlined, RightOutlined, LeftOutlined, PauseCircleOutlined, StepForwardOutlined, ReloadOutlined } from '@ant-design/icons';
 import zhCN from 'antd/locale/zh_CN';
-import type { Layer, Packet } from '@/domain/types';
-import { DEFAULT_SUBNETS, SubnetPool } from '@/domain/ipam';
+import type { Device, DeviceId, DeviceKind, Layer, Packet } from '@/domain/types';
+import { useStore } from '@/state/store';
 import { viz } from '@/visualization/registry';
 import {
   ReactFlow,
@@ -36,12 +40,10 @@ import {
   Controls,
   Handle,
   Position,
-  addEdge,
   ConnectionMode,
-  applyNodeChanges,
   useReactFlow,
 } from '@xyflow/react';
-import type { Edge, Node, NodeChange, NodeProps } from '@xyflow/react';
+import type { Connection as FlowConnection, Edge, EdgeChange, Node, NodeChange, NodeProps } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import i18n from '@/i18n';
 
@@ -70,6 +72,56 @@ const kindKey: Record<Kind, string> = {
   annotation: 'kind.annotation',
 };
 
+/** 域 DeviceKind → 面板/画布 UI kind（图标/文案用）。 */
+const DOMAIN_KIND_UI: Record<DeviceKind, Kind> = {
+  pc: 'pc',
+  router: 'router',
+  switch: 'switch',
+  'dhcp-server': 'dhcpserver',
+  'dhcp-relay-agent': 'dhcprelay',
+  'dns-server': 'dnsserver',
+};
+
+/**
+ * 设备图标来源：Device 真实状态决定（apache2 服务启用 → Web 服务器图标，WF-17 归并方向；
+ * 其余按域 kind）。画布不信任拖放时的面板 kind。
+ */
+function uiKindOf(d: Device): Kind {
+  return d.services?.apache2?.enabled ? 'apache2' : DOMAIN_KIND_UI[d.kind];
+}
+
+/** 拖放面板 kind → store DeviceKind；annotation 等画布标注不入拓扑（返回 null）。 */
+function storeKindOf(ui: Kind): DeviceKind | null {
+  switch (ui) {
+    case 'pc':
+    case 'apache2':
+      return 'pc';
+    case 'router':
+      return 'router';
+    case 'switch':
+      return 'switch';
+    case 'dhcpserver':
+      return 'dhcp-server';
+    case 'dhcprelay':
+      return 'dhcp-relay-agent';
+    case 'dnsserver':
+      return 'dns-server';
+    default:
+      return null;
+  }
+}
+
+/** 设备主接口 IP（首个有 IP 的接口；未配置 → null）。单事实源是 store 的 ip=null。 */
+function ifaceIp(d: Device): string | null {
+  for (const f of Object.values(d.interfaces)) if (f.ip) return f.ip;
+  return null;
+}
+
+/** 设备主接口 MAC（接口一定存在；假仿真帧用真实 MAC，增删设备不再错位）。 */
+function ifaceMac(d: Device): string {
+  return Object.values(d.interfaces)[0]?.mac ?? '00:00:00:00:00:00';
+}
+
 // —— 设备节点动作（终端/租约等），由 Shell 通过 Context 提供给节点组件 ——
 const NodeActions = createContext<{
   openTerminal: (label: string, ip: string) => void;
@@ -97,7 +149,7 @@ const panelItems: PanelItem[] = [
   { key: 'isc-dhcp-relay', icon: 'isc-dhcp-relay.svg', tipKey: 'panel.iscDhcpRelay' },
   { key: 'bind9', icon: 'bind9.svg', tipKey: 'panel.bind9' },
   { key: 'apache2', icon: 'apache2.svg', tipKey: 'panel.apache2', drag: true },
-  { key: 'annotation', icon: 'annotation.svg', tipKey: 'panel.annotation', drag: true },
+  { key: 'annotation', icon: 'annotation.svg', tipKey: 'panel.annotation' },
   { key: 'traffic', icon: 'traffic.svg', tipKey: 'panel.traffic', tool: 'traffic' },
   { key: 'animation', icon: 'animationControls.svg', tipKey: 'panel.animation', tool: 'animation' },
   { key: 'settings', icon: 'settings.svg', tipKey: 'panel.settings', tool: 'settings' },
@@ -194,23 +246,19 @@ function layerFields(layer: Layer): Array<[string, string]> {
   }
 }
 
-// —— React Flow 节点/边 ——
-type DeviceData = {
-  kind: Kind;
-  label: string;
-  ip: string;
-  netmask: string;
-  gateway: string;
-  ipv4Forwarding: boolean;
-};
+// —— React Flow 节点/边：data 只带投影所需最小信息，内容经 store 订阅 ——
+type DeviceData = { kind: Kind; deviceId: DeviceId };
 type DeviceFlowNode = Node<DeviceData, 'device'>;
 
 function DeviceNodeView({ data }: NodeProps<DeviceFlowNode>) {
   const { t } = useTranslation();
-  const showIp = data.ip !== '—' && data.kind !== 'annotation';
   const actions = useContext(NodeActions);
   const [hover, setHover] = useState(false);
-  // 中心锚点（隐藏）：所有边显式锚定到设备中心，渲染确定性
+  // 节点内容 = store 真 Device（WF-15）：删除/改名/改 IP 后画布自动同步。
+  const device = useStore((s) => s.topology.devices[data.deviceId]);
+  if (!device) return null;
+  const kind = uiKindOf(device);
+  const ip = ifaceIp(device);
   return (
     <div
       style={{ width: 80, height: 80 }}
@@ -219,8 +267,8 @@ function DeviceNodeView({ data }: NodeProps<DeviceFlowNode>) {
     >
       <Handle id="src-c" type="source" position={Position.Top} style={{ left: '50%', top: '50%', opacity: 0 }} />
       <img
-        src={`/assets/board/${boardIcon[data.kind]}`}
-        alt={t(kindKey[data.kind])}
+        src={`/assets/board/${boardIcon[kind]}`}
+        alt={t(kindKey[kind])}
         style={{ width: '100%', height: '100%', pointerEvents: 'none' }}
         draggable={false}
       />
@@ -242,8 +290,8 @@ function DeviceNodeView({ data }: NodeProps<DeviceFlowNode>) {
           }}
         />
       ))}
-      {hover && data.kind !== 'annotation' && iconBtn(t('panel.openTerminal'), -8, () => actions.openTerminal(data.label, data.ip === '—' ? t('device.unconfigured') : data.ip), <CodeOutlined style={{ fontSize: 12 }} />)}
-      {hover && data.kind === 'dhcpserver' && iconBtn(t('panel.leases'), 18, () => actions.openLeases(data.label), <TableOutlined style={{ fontSize: 12 }} />)}
+      {hover && kind !== 'annotation' && iconBtn(t('panel.openTerminal'), -8, () => actions.openTerminal(device.label, ip ?? t('device.unconfigured')), <CodeOutlined style={{ fontSize: 12 }} />)}
+      {hover && kind === 'dhcpserver' && iconBtn(t('panel.leases'), 18, () => actions.openLeases(device.label), <TableOutlined style={{ fontSize: 12 }} />)}
       {/* 设备名牌：名称 + IP（按类型区分；绝对定位，不影响节点尺寸与连线中心） */}
       <div
         style={{
@@ -252,11 +300,11 @@ function DeviceNodeView({ data }: NodeProps<DeviceFlowNode>) {
         }}
       >
         <div style={{ fontSize: 12, fontWeight: 600, lineHeight: '16px', color: '#1f1f1f', textShadow: '0 0 3px #fff, 0 0 3px #fff, 0 0 3px #fff' }}>
-          {data.label}
+          {device.label}
         </div>
-        {showIp && (
+        {ip && (
           <div style={{ fontSize: 11, lineHeight: '14px', color: '#444', textShadow: '0 0 3px #fff, 0 0 3px #fff' }}>
-            {data.ip}
+            {ip}
           </div>
         )}
       </div>
@@ -285,29 +333,13 @@ function iconBtn(tip: string, right: number, onClick: () => void, icon: React.Re
 
 const nodeTypes = { device: DeviceNodeView };
 
-const seedNodes: DeviceFlowNode[] = [
-  { id: 'pc-0', type: 'device', position: { x: 180, y: 100 }, data: { kind: 'pc', label: 'PC-0', ip: '192.168.1.10', netmask: '255.255.255.0', gateway: '192.168.1.1', ipv4Forwarding: false } },
-  { id: 'pc-1', type: 'device', position: { x: 180, y: 290 }, data: { kind: 'pc', label: 'PC-1', ip: '192.168.1.11', netmask: '255.255.255.0', gateway: '192.168.1.1', ipv4Forwarding: false } },
-  { id: 'sw-0', type: 'device', position: { x: 430, y: 195 }, data: { kind: 'switch', label: 'Switch-0', ip: '—', netmask: '', gateway: '', ipv4Forwarding: false } },
-  { id: 'r-0', type: 'device', position: { x: 680, y: 195 }, data: { kind: 'router', label: 'Router-0', ip: '192.168.1.1', netmask: '255.255.255.0', gateway: '', ipv4Forwarding: true } },
-  { id: 'dhcp-0', type: 'device', position: { x: 680, y: 380 }, data: { kind: 'dhcpserver', label: 'DHCP-0', ip: '192.168.1.1', netmask: '255.255.255.0', gateway: '', ipv4Forwarding: false } },
-];
-
-const seedEdges: Edge[] = [
-  { id: 'pc-0-sw-0', source: 'pc-0', target: 'sw-0', sourceHandle: 'src-c', targetHandle: 'tgt-c' },
-  { id: 'pc-1-sw-0', source: 'pc-1', target: 'sw-0', sourceHandle: 'src-c', targetHandle: 'tgt-c' },
-  { id: 'sw-0-r-0', source: 'sw-0', target: 'r-0', sourceHandle: 'src-c', targetHandle: 'tgt-c' },
-  { id: 'r-0-dhcp-0', source: 'r-0', target: 'dhcp-0', sourceHandle: 'src-c', targetHandle: 'tgt-c' },
-];
-
 const edgeStyle = { stroke: '#5a7d7c', strokeWidth: 2 };
 const edgeFlashStyle = { stroke: '#fa8c16', strokeWidth: 4 };
 
 type CmdKind = 'ping' | 'tcp' | 'http' | 'ftp' | 'traceroute' | 'dns' | 'dhcp' | 'telnet' | 'arpscan';
 
-function macOf(i: number): string {
-  return `aa:bb:cc:dd:ee:${(i + 1).toString(16).padStart(2, '0')}`;
-}
+/** http 演示的假想公网目标（无对应节点时沿用惯例，WF-17 转真实后移除）。 */
+const INTERNET_IP = '93.184.216.34';
 
 function ethLayer(dstMac: string, srcMac: string): Layer {
   return { kind: 'ethernet', dstMac, srcMac, etherType: 'ipv4' };
@@ -344,11 +376,69 @@ const boardStyle: React.CSSProperties = {
   backgroundSize: '10px 10px',
 };
 
+/** 首次挂载灌入演示种子拓扑（等价旧 seedNodes/seedEdges 语义，但全部经 store 动作）。 */
+function seedTopology(): void {
+  const st = useStore.getState();
+  if (Object.keys(st.topology.devices).length > 0) return;
+  const pc0 = st.addDevice('pc', { position: { x: 180, y: 100 } });
+  const pc1 = st.addDevice('pc', { position: { x: 180, y: 290 } });
+  const sw = st.addDevice('switch', { position: { x: 430, y: 195 } });
+  const r0 = st.addDevice('router', { position: { x: 680, y: 195 } });
+  const dhcp = st.addDevice('dhcp-server', { position: { x: 680, y: 380 } });
+  // 恢复旧原型的友好名称（store 默认名按全局序号：Switch-2/Router-3/DHCP-4）
+  st.updateDevice(sw, { label: 'Switch-0' });
+  st.updateDevice(r0, { label: 'Router-0' });
+  st.updateDevice(dhcp, { label: 'DHCP-0' });
+  // 全部接入同一交换机（192.168.1.0/24 段）：PC .2/.3、路由器 enp0s3 取网关 .1、DHCP .4
+  st.addConnection(pc0, 'enp0s3', sw);
+  st.addConnection(pc1, 'enp0s3', sw);
+  st.addConnection(r0, 'enp0s3', sw);
+  st.addConnection(dhcp, 'enp0s3', sw);
+}
+
+/** 服务名 → i18n 标签（配置抽屉展示用）。 */
+const SERVICE_KEYS: Record<string, string> = {
+  dhcpd: 'svc.dhcpd',
+  dhclient: 'svc.dhclient',
+  dhcrelay: 'svc.dhcrelay',
+  named: 'svc.named',
+  apache2: 'svc.apache2',
+  iptables: 'svc.iptables',
+};
+
 function Shell() {
   const { t } = useTranslation();
-  const [nodes, setNodes] = useState<DeviceFlowNode[]>(seedNodes);
-  const [edges, setEdges] = useState<Edge[]>(seedEdges);
-  const [selected, setSelected] = useState<DeviceFlowNode | null>(null);
+  const { message } = AntApp.useApp();
+  // —— store.topology 投影（节点/边只是派生视图，永远不本地持有拓扑）——
+  const deviceMap = useStore((s) => s.topology.devices);
+  const connections = useStore((s) => s.topology.connections);
+  // RF 受控选中态（节点/边删除键目标；不落 store）
+  const [selNodeIds, setSelNodeIds] = useState<string[]>([]);
+  const [selEdgeIds, setSelEdgeIds] = useState<string[]>([]);
+  const nodes: DeviceFlowNode[] = useMemo(
+    () =>
+      Object.values(deviceMap).map((d) => ({
+        id: d.id,
+        type: 'device',
+        position: d.position,
+        data: { kind: uiKindOf(d), deviceId: d.id },
+        selected: selNodeIds.includes(d.id),
+      })),
+    [deviceMap, selNodeIds],
+  );
+  const edges: Edge[] = useMemo(
+    () =>
+      connections.map((c) => ({
+        id: c.id,
+        source: c.fromDeviceId,
+        target: c.toSwitchId,
+        type: 'straight',
+        style: edgeStyle,
+        selected: selEdgeIds.includes(c.id),
+      })),
+    [connections, selEdgeIds],
+  );
+  const [selectedId, setSelectedId] = useState<DeviceId | null>(null);
   const [panelOpen, setPanelOpen] = useState(true);
   const [traceOpen, setTraceOpen] = useState(true);
   const [traceWidth, setTraceWidth] = useState(400);
@@ -373,63 +463,98 @@ function Shell() {
   const runGen = useRef(0); // 复位代数：递增使进行中的动画失效
   const hoppingRef = useRef(false); // 跳动画互斥：同一时刻只允许一跳
   const loopTokenRef = useRef(0); // 播放循环令牌：新循环使旧循环失效
-  const seq = useRef(0);
+  const seededOnce = useRef(false); // 种子拓扑只灌一次（New 后不自动重灌）
   const { screenToFlowPosition } = useReactFlow();
   const canvasRef = useRef<HTMLDivElement>(null);
 
+  // 首次挂载灌入演示种子（StrictMode 双调用由 seededOnce 幂等化）
+  useEffect(() => {
+    if (seededOnce.current) return;
+    seededOnce.current = true;
+    seedTopology();
+  }, []);
+
+  // —— 拓扑编辑一律写回 store：位置/删除/连线；选中态仅本地（RF 删除键目标）——
   function onNodesChange(changes: NodeChange<DeviceFlowNode>[]) {
-    setNodes((nds) => applyNodeChanges(changes, nds));
+    const st = useStore.getState();
+    for (const ch of changes) {
+      if (ch.type === 'remove') {
+        st.removeDevice(ch.id);
+        setSelNodeIds((s) => s.filter((x) => x !== ch.id));
+      } else if (ch.type === 'position' && ch.position) {
+        st.updateDevice(ch.id, { position: { x: ch.position.x, y: ch.position.y } });
+      } else if (ch.type === 'select') {
+        setSelNodeIds((s) => (ch.selected ? (s.includes(ch.id) ? s : [...s, ch.id]) : s.filter((x) => x !== ch.id)));
+      }
+      // dimensions：忽略
+    }
   }
 
+  function onEdgesChange(changes: EdgeChange<Edge>[]) {
+    const st = useStore.getState();
+    for (const ch of changes) {
+      if (ch.type === 'remove') {
+        setSelEdgeIds((s) => s.filter((x) => x !== ch.id));
+        const conn = st.topology.connections.find((c) => c.id === ch.id);
+        if (conn) st.removeConnection(conn.fromDeviceId, conn.fromInterfaceId);
+      } else if (ch.type === 'select') {
+        setSelEdgeIds((s) => (ch.selected ? (s.includes(ch.id) ? s : [...s, ch.id]) : s.filter((x) => x !== ch.id)));
+      }
+    }
+  }
+
+  // 拉线（WF-15）：一端设备接口、一端交换机；路由器取第一个空闲接口接线
+  function handleConnect(c: FlowConnection) {
+    if (c.source === c.target) return;
+    const st = useStore.getState();
+    const src = st.topology.devices[c.source];
+    const tgt = st.topology.devices[c.target];
+    if (!src || !tgt) return;
+    const sw = src.kind === 'switch' ? src : tgt.kind === 'switch' ? tgt : null;
+    const dev = src === sw ? tgt : src;
+    if (!sw || dev.kind === 'switch') {
+      message.warning(t('msg.needSwitch'));
+      return;
+    }
+    const free = Object.values(dev.interfaces).find((f) => f.connectedSwitchId === null);
+    if (!free) {
+      message.warning(t('msg.noFreeIface', { label: dev.label }));
+      return;
+    }
+    try {
+      st.addConnection(dev.id, free.id, sw.id);
+    } catch (err) {
+      message.error((err as Error).message);
+    }
+  }
+
+  // 拖放建设备（WF-6 语义走 store.addDevice，含 apache2 → pc+apache2 服务归并）
   function onDropDevice(e: React.DragEvent<HTMLDivElement>) {
     e.preventDefault();
     const kind = e.dataTransfer.getData('text/plain') as Kind;
-    if (!(kind in boardIcon)) return;
+    const devKind = storeKindOf(kind);
+    if (!devKind) return;
     const pos = screenToFlowPosition({ x: e.clientX, y: e.clientY });
-    // 序号自增直到不与现有节点 id 冲突（种子数据已占用 pc-1 等）
-    seq.current += 1;
-    let id = `${kind}-${seq.current}`;
-    while (nodes.some((n) => n.id === id)) {
-      seq.current += 1;
-      id = `${kind}-${seq.current}`;
-    }
-    // —— WF-6：拖入设备即自动分配 IP / 掩码 / 网关（与 store.addDevice 同一分配模块）——
-    // 在 setNodes 更新器内用最新节点列表计算占用，避免连丢时读到过期闭包。
-    setNodes((nds) => {
-      const unconfigured = t('device.unconfigured');
-      const used = new Set(
-        nds
-          .filter((n) => n.data.ip !== '—' && n.data.ip !== unconfigured)
-          .map((n) => n.data.ip),
-      );
-      const pool = new SubnetPool(DEFAULT_SUBNETS);
-      let ip = '—';
-      let netmask = '';
-      let gateway = '';
-      if (kind === 'router') {
-        const a = pool.allocateRouterInterface(0, used);
-        if (a) {
-          ip = a.ip;
-          netmask = a.netmask;
-        }
-      } else if (kind !== 'switch' && kind !== 'annotation') {
-        const a = pool.allocateEndDevice(used);
-        if (a) {
-          ip = a.ip;
-          netmask = a.netmask;
-          gateway = a.gateway ?? '';
-        }
+    try {
+      const st = useStore.getState();
+      const id = st.addDevice(devKind, { position: { x: pos.x - 40, y: pos.y - 40 } });
+      if (kind === 'apache2') {
+        st.updateDevice(id, {
+          services: {
+            ...st.topology.devices[id].services,
+            apache2: { enabled: true, config: { documentRoot: '/var/www/html', vhosts: [] } },
+          },
+        });
       }
-      return [
-        ...nds,
-        {
-          id,
-          type: 'device',
-          position: { x: pos.x - 40, y: pos.y - 40 },
-          data: { kind, label: id, ip, netmask, gateway, ipv4Forwarding: kind === 'router' },
-        },
-      ];
-    });
+    } catch (err) {
+      message.error((err as Error).message); // 地址池耗尽等
+    }
+  }
+
+  function clearTopology() {
+    const st = useStore.getState();
+    for (const id of Object.keys(st.topology.devices)) st.removeDevice(id);
+    setSelectedId(null);
   }
 
   // 拖拽侧边栏左缘调宽（280–640px）
@@ -488,7 +613,6 @@ function Shell() {
     window.addEventListener('mouseup', onUp);
   }
 
-
   // 打开设备终端悬浮窗（可同时多个）
   function openTerminal(label: string, ip: string) {
     termSeq.current += 1;
@@ -519,24 +643,24 @@ function Shell() {
   }
 
   // 迷你 shell：help / ip a / ping <ip> / clear（提示文案走 i18n；ping 输出保持惯例英文）
-  function handleTermKey(t: { id: number; label: string; ip: string; lines: string[]; input: string }, e: React.KeyboardEvent) {
+  function handleTermKey(tm: { id: number; label: string; ip: string; lines: string[]; input: string }, e: React.KeyboardEvent) {
     if (e.key !== 'Enter') return;
-    const cmd = t.input.trim();
-    const out: string[] = [`root@${t.label}:~$ ${t.input}`];
+    const cmd = tm.input.trim();
+    const out: string[] = [`root@${tm.label}:~$ ${tm.input}`];
     if (cmd === 'help') {
       out.push(i18n.t('term.help'));
     } else if (cmd === 'ip a') {
-      out.push('1: lo: <LOOPBACK,UP,LOWER_UP>', '    inet 127.0.0.1/8 scope host lo', '2: enp0s3: <BROADCAST,MULTICAST,UP>', `    inet ${t.ip}/24 brd 192.168.1.255 scope global enp0s3`);
+      out.push('1: lo: <LOOPBACK,UP,LOWER_UP>', '    inet 127.0.0.1/8 scope host lo', '2: enp0s3: <BROADCAST,MULTICAST,UP>', `    inet ${tm.ip}/24 brd 192.168.1.255 scope global enp0s3`);
     } else if (cmd.startsWith('ping ')) {
       const dstIp = cmd.slice(5).trim() || '0.0.0.0';
       for (let i = 1; i <= 4; i++) out.push(`64 bytes from ${dstIp}: icmp_seq=${i} ttl=64 time=0.${10 + i * 7} ms`);
     } else if (cmd === 'clear') {
-      setTerminals((ts) => ts.map((x) => (x.id === t.id ? { ...x, lines: [], input: '' } : x)));
+      setTerminals((ts) => ts.map((x) => (x.id === tm.id ? { ...x, lines: [], input: '' } : x)));
       return;
     } else if (cmd) {
       out.push(i18n.t('term.notFound', { cmd: cmd.split(' ')[0] }));
     }
-    setTerminals((ts) => ts.map((x) => (x.id === t.id ? { ...x, lines: [...x.lines, ...out], input: '' } : x)));
+    setTerminals((ts) => ts.map((x) => (x.id === tm.id ? { ...x, lines: [...x.lines, ...out], input: '' } : x)));
   }
 
   function openLeases(label: string) {
@@ -634,23 +758,25 @@ function Shell() {
   }
 
   // 点击追踪行：重放该报文对应的画布动画（WF-5 续）。演示命令行直接用记录的节点；
-  // 示例数据行（无 fromId/toId）按 src/dst IP 反查拓扑节点，两端齐全才重放。
+  // 示例数据行（无 fromId/toId）按 src/dst IP 反查拓扑设备，两端齐全才重放。
   function replayHop(row: TraceRow) {
-    const fromId = row.fromId ?? nodes.find((n) => n.data.ip === row.src)?.id;
-    const toId = row.toId ?? nodes.find((n) => n.data.ip === row.dst)?.id;
+    const devs = Object.values(useStore.getState().topology.devices);
+    const fromId = row.fromId ?? devs.find((d) => ifaceIp(d) === row.src)?.id;
+    const toId = row.toId ?? devs.find((d) => ifaceIp(d) === row.dst)?.id;
     if (fromId && toId) void animatePath(fromId, toId, row.proto, 1);
   }
 
-  // —— WF-3 仿真控制器：开始 / 暂停 / 单步 / 恢复 ——
+  // —— 假仿真序列合成（WF-16 换真实引擎；数据源 = store 设备真身）——
   function buildSequence(): { rows: TraceRow[]; pkts: Packet[]; hops: Array<{ fromId: string; toId: string; proto: string }> } | null {
-    const src = nodes.find((n) => n.id === srcId);
+    const devs = Object.values(useStore.getState().topology.devices);
+    const src = devs.find((d) => d.id === srcId);
     if (!src) return null;
-    const dst = nodes.find((n) => n.id === dstId);
+    const dst = devs.find((d) => d.id === dstId);
     if (cmdKind !== 'http' && !dst) return null;
-    const smac = macOf(nodes.findIndex((n) => n.id === srcId));
-    const sip = src.data.ip === '—' || src.data.ip === t('device.unconfigured') ? '0.0.0.0' : src.data.ip;
-    const dip = cmdKind === 'http' ? '93.184.216.34' : (dst!.data.ip === '—' || dst!.data.ip === t('device.unconfigured') ? sip : dst!.data.ip);
-    const dmac = dst ? macOf(nodes.findIndex((n) => n.id === dstId)) : macOf(63);
+    const smac = ifaceMac(src);
+    const sip = ifaceIp(src) ?? '0.0.0.0';
+    const dip = cmdKind === 'http' ? INTERNET_IP : (dst ? ifaceIp(dst) ?? sip : sip);
+    const dmac = dst ? ifaceMac(dst) : 'aa:bb:cc:dd:ee:40';
     let time = 0.001;
     const rows: TraceRow[] = [];
     const pkts: Packet[] = [];
@@ -692,33 +818,34 @@ function Shell() {
       add('tcp', sip, dip, 'Telnet 会话建立', mkPacket([ethLayer(dmac, smac), ipLayer(sip, dip, 'tcp'), tcpLayer(49152, 23, 1001, 3001, false, true)]), srcNodeId, dstNodeId);
     }
     if (cmdKind === 'traceroute') {
-     
       add('icmp', sip, dip, `TTL=1 探测`, mkPacket([ethLayer(dmac, smac), ipLayer(sip, dip, 'icmp', 1), { kind: 'icmp', type: 'echo-request' }]), srcNodeId, dstNodeId);
       add('icmp', dip, sip, i18n.t('gen.timeExceeded', { hop: '1' }), mkPacket([ethLayer(smac, dmac), ipLayer(dip, sip, 'icmp'), { kind: 'icmp', type: 'time-exceeded' }]), dstNodeId, srcNodeId);
       add('icmp', sip, dip, `TTL=2 探测`, mkPacket([ethLayer(dmac, smac), ipLayer(sip, dip, 'icmp', 2), { kind: 'icmp', type: 'echo-request' }]), srcNodeId, dstNodeId);
       add('icmp', dip, sip, i18n.t('gen.echoReply'), mkPacket([ethLayer(smac, dmac), ipLayer(dip, sip, 'icmp'), { kind: 'icmp', type: 'echo-reply' }]), dstNodeId, srcNodeId);
     }
     if (cmdKind === 'dns') {
-      const dnsNode = nodes.find((n) => n.data.kind === 'dnsserver');
-      const dnsIp = dnsNode?.data.ip ?? dip;
-      add('dns', sip, dnsIp, `DNS 查询 ${url}`, mkPacket([ethLayer(dmac, smac), ipLayer(sip, dnsIp, 'udp'), { kind: 'udp', srcPort: 49152, dstPort: 53 }, { kind: 'dns', qr: 'query', xid: 0x1234, name: url }]), srcNodeId, dnsNode?.id ?? dstNodeId);
-      add('dns', dnsIp, sip, `DNS 应答 → ${dip}`, mkPacket([ethLayer(smac, dmac), ipLayer(dnsIp, sip, 'udp'), { kind: 'udp', srcPort: 53, dstPort: 49152 }, { kind: 'dns', qr: 'reply', xid: 0x1234, name: url }]), dnsNode?.id ?? dstNodeId, srcNodeId);
+      const dnsDev = devs.find((d) => uiKindOf(d) === 'dnsserver');
+      const dnsIp = (dnsDev ? ifaceIp(dnsDev) : dst ? ifaceIp(dst) : null) ?? dip;
+      add('dns', sip, dnsIp, `DNS 查询 ${url}`, mkPacket([ethLayer(dmac, smac), ipLayer(sip, dnsIp, 'udp'), { kind: 'udp', srcPort: 49152, dstPort: 53 }, { kind: 'dns', qr: 'query', xid: 0x1234, name: url }]), srcNodeId, dnsDev?.id ?? dstNodeId);
+      add('dns', dnsIp, sip, `DNS 应答 → ${dip}`, mkPacket([ethLayer(smac, dmac), ipLayer(dnsIp, sip, 'udp'), { kind: 'udp', srcPort: 53, dstPort: 49152 }, { kind: 'dns', qr: 'reply', xid: 0x1234, name: url }]), dnsDev?.id ?? dstNodeId, srcNodeId);
     }
     if (cmdKind === 'dhcp') {
-      const dhcpNode = nodes.find((n) => n.data.kind === 'dhcpserver');
-      if (dhcpNode) {
-        add('dhcp', '0.0.0.0', '255.255.255.255', 'DHCP Discover（广播）', mkPacket([ethLayer('ff:ff:ff:ff:ff:ff', smac), ipLayer('0.0.0.0', '255.255.255.255', 'udp'), { kind: 'udp', srcPort: 68, dstPort: 67 }, { kind: 'dhcp', messageType: 'discover', xid: 0x3d1d, chaddr: smac }]), srcNodeId, dhcpNode.id);
-        add('dhcp', dhcpNode.data.ip, sip, `DHCP Offer → 提供 ${sip}`, mkPacket([ethLayer(smac, dmac), ipLayer(dhcpNode.data.ip, sip, 'udp'), { kind: 'udp', srcPort: 67, dstPort: 68 }, { kind: 'dhcp', messageType: 'offer', xid: 0x3d1d, chaddr: smac, yiaddr: sip }]), dhcpNode.id, srcNodeId);
-        add('dhcp', '0.0.0.0', '255.255.255.255', 'DHCP Request（广播确认）', mkPacket([ethLayer('ff:ff:ff:ff:ff:ff', smac), ipLayer('0.0.0.0', '255.255.255.255', 'udp'), { kind: 'udp', srcPort: 68, dstPort: 67 }, { kind: 'dhcp', messageType: 'request', xid: 0x3d1d, chaddr: smac }]), srcNodeId, dhcpNode.id);
-        add('dhcp', dhcpNode.data.ip, sip, `DHCP Ack → 确认 ${sip}`, mkPacket([ethLayer(smac, dmac), ipLayer(dhcpNode.data.ip, sip, 'udp'), { kind: 'udp', srcPort: 67, dstPort: 68 }, { kind: 'dhcp', messageType: 'ack', xid: 0x3d1d, chaddr: smac, yiaddr: sip }]), dhcpNode.id, srcNodeId);
+      const dhcpDev = devs.find((d) => uiKindOf(d) === 'dhcpserver');
+      if (dhcpDev) {
+        const dhcpIp = ifaceIp(dhcpDev) ?? '192.168.1.1';
+        add('dhcp', '0.0.0.0', '255.255.255.255', 'DHCP Discover（广播）', mkPacket([ethLayer('ff:ff:ff:ff:ff:ff', smac), ipLayer('0.0.0.0', '255.255.255.255', 'udp'), { kind: 'udp', srcPort: 68, dstPort: 67 }, { kind: 'dhcp', messageType: 'discover', xid: 0x3d1d, chaddr: smac }]), srcNodeId, dhcpDev.id);
+        add('dhcp', dhcpIp, sip, `DHCP Offer → 提供 ${sip}`, mkPacket([ethLayer(smac, dmac), ipLayer(dhcpIp, sip, 'udp'), { kind: 'udp', srcPort: 67, dstPort: 68 }, { kind: 'dhcp', messageType: 'offer', xid: 0x3d1d, chaddr: smac, yiaddr: sip }]), dhcpDev.id, srcNodeId);
+        add('dhcp', '0.0.0.0', '255.255.255.255', 'DHCP Request（广播确认）', mkPacket([ethLayer('ff:ff:ff:ff:ff:ff', smac), ipLayer('0.0.0.0', '255.255.255.255', 'udp'), { kind: 'udp', srcPort: 68, dstPort: 67 }, { kind: 'dhcp', messageType: 'request', xid: 0x3d1d, chaddr: smac }]), srcNodeId, dhcpDev.id);
+        add('dhcp', dhcpIp, sip, `DHCP Ack → 确认 ${sip}`, mkPacket([ethLayer(smac, dmac), ipLayer(dhcpIp, sip, 'udp'), { kind: 'udp', srcPort: 67, dstPort: 68 }, { kind: 'dhcp', messageType: 'ack', xid: 0x3d1d, chaddr: smac, yiaddr: sip }]), dhcpDev.id, srcNodeId);
       }
     }
     if (cmdKind === 'arpscan') {
-      const sameSubnet = nodes.filter((n) => n.id !== srcId && n.data.ip !== '—' && n.data.ip !== t('device.unconfigured'));
+      const sameSubnet = devs.filter((d) => d.id !== srcId && ifaceIp(d) !== null);
       sameSubnet.forEach((dev) => {
-        const devMac = macOf(nodes.findIndex((n) => n.id === dev.id));
-        add('arp', sip, dev.data.ip, `ARP 扫描 → ${dev.data.ip}`, mkPacket([ethLayer(devMac, smac), { kind: 'arp', op: 'request', senderIp: sip, senderMac: smac, targetIp: dev.data.ip, targetMac: '00:00:00:00:00:00' }]), srcNodeId, dev.id);
-        add('arp', dev.data.ip, sip, `${dev.data.ip} 位于 ${devMac}`, mkPacket([ethLayer(smac, devMac), { kind: 'arp', op: 'reply', senderIp: dev.data.ip, senderMac: devMac, targetIp: sip, targetMac: smac }]), dev.id, srcNodeId);
+        const devMac = ifaceMac(dev);
+        const devIp = ifaceIp(dev)!;
+        add('arp', sip, devIp, `ARP 扫描 → ${devIp}`, mkPacket([ethLayer(devMac, smac), { kind: 'arp', op: 'request', senderIp: sip, senderMac: smac, targetIp: devIp, targetMac: '00:00:00:00:00:00' }]), srcNodeId, dev.id);
+        add('arp', devIp, sip, `${devIp} 位于 ${devMac}`, mkPacket([ethLayer(smac, devMac), { kind: 'arp', op: 'reply', senderIp: devIp, senderMac: devMac, targetIp: sip, targetMac: smac }]), dev.id, srcNodeId);
       });
     }
     return { rows, pkts, hops };
@@ -830,7 +957,7 @@ function Shell() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [srcId, dstId, cmdKind]);
 
-  // 原生 click 监听：节点选择 → 打开配置抽屉（按钮点击已排除）
+  // 原生 click 监听：节点选择 → 打开配置抽屉（按钮点击已排除）；读 store 快照，不依赖闭包
   useEffect(() => {
     const el = canvasRef.current;
     if (!el) return;
@@ -840,17 +967,18 @@ function Shell() {
       const nodeEl = target.closest('.react-flow__node');
       if (!nodeEl) {
         if (target.closest('.react-flow__pane')) {
-          setSelected(null);
+          setSelectedId(null);
         }
         return;
       }
       const id = nodeEl.getAttribute('data-id');
-      const n = nodes.find((nd) => nd.id === id);
-      if (n) setSelected(n);
+      if (id && useStore.getState().topology.devices[id]) setSelectedId(id);
     }
     el.addEventListener('click', onClick);
     return () => el.removeEventListener('click', onClick);
-  }, [nodes]);
+  }, []);
+
+  const selected = selectedId ? deviceMap[selectedId] : undefined;
 
   return (
     <NodeActions.Provider value={{ openTerminal, openLeases }}>
@@ -868,7 +996,7 @@ function Shell() {
             <Tooltip title={t('nav.openTooltip')}>
               <Button icon={<FolderOpenOutlined />}>{t('nav.open')}</Button>
             </Tooltip>
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => { setNodes([]); setEdges([]); setSelected(null); }}>
+            <Button type="primary" icon={<PlusOutlined />} onClick={clearTopology}>
               {t('nav.new')}
             </Button>
           </Space>
@@ -894,7 +1022,7 @@ function Shell() {
             style={{ width: 130 }}
             value={srcId}
             onChange={(v) => setSrcId(v)}
-            options={nodes.map((n) => ({ value: n.id, label: n.data.label }))}
+            options={nodes.map((n) => ({ value: n.id, label: deviceMap[n.id]?.label ?? n.id }))}
             size="small"
           />
           {cmdKind === 'http' ? (
@@ -918,10 +1046,10 @@ function Shell() {
                 onChange={(v) => setDstId(v)}
                 options={
                   cmdKind === 'dns'
-                    ? nodes.filter((n) => n.data.kind === 'dnsserver').map((n) => ({ value: n.id, label: n.data.label }))
+                    ? nodes.filter((n) => n.data.kind === 'dnsserver').map((n) => ({ value: n.id, label: deviceMap[n.id]?.label ?? n.id }))
                     : cmdKind === 'dhcp'
-                      ? nodes.filter((n) => n.data.kind === 'dhcpserver').map((n) => ({ value: n.id, label: n.data.label }))
-                      : nodes.filter((n) => n.id !== srcId).map((n) => ({ value: n.id, label: n.data.label }))
+                      ? nodes.filter((n) => n.data.kind === 'dhcpserver').map((n) => ({ value: n.id, label: deviceMap[n.id]?.label ?? n.id }))
+                      : nodes.filter((n) => n.id !== srcId).map((n) => ({ value: n.id, label: deviceMap[n.id]?.label ?? n.id }))
                 }
                 size="small"
               />
@@ -963,9 +1091,10 @@ function Shell() {
               edges={edges.map((e) => (flashEdgeId === e.id ? { ...e, style: edgeFlashStyle } : e))}
               nodeTypes={nodeTypes}
               onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
               connectionMode={ConnectionMode.Loose}
               connectionRadius={80}
-              onConnect={(c) => setEdges((es) => addEdge({ ...c, type: 'straight', style: edgeStyle }, es))}
+              onConnect={handleConnect}
               onDragOver={(e) => e.preventDefault()}
               onDrop={onDropDevice}
               defaultEdgeOptions={{ type: 'straight', style: edgeStyle }}
@@ -1117,49 +1246,118 @@ function Shell() {
             </>
           )}
         </div>
-
       </div>
 
-      {/* 设备配置抽屉（点设备弹出；保存写回设备数据） */}
+      {/* 设备配置抽屉（点设备弹出；保存写回 store：updateDevice/updateInterface） */}
       <Drawer
-        title={selected ? t('drawer.title', { label: selected.data.label, kind: t(kindKey[selected.data.kind]) }) : t('drawer.titlePlain')}
-        open={selected !== null}
-        onClose={() => setSelected(null)}
-        width={360}
+        title={
+          selected
+            ? t('drawer.title', { label: selected.label, kind: t(kindKey[uiKindOf(selected)]) })
+            : t('drawer.titlePlain')
+        }
+        open={selected !== undefined}
+        onClose={() => setSelectedId(null)}
+        width={400}
       >
         {selected && (
           <Form
             key={selected.id}
             layout="vertical"
             initialValues={{
-              label: selected.data.label,
-              ip: selected.data.ip,
-              mask: selected.data.netmask,
-              gw: selected.data.gateway,
-              fwd: selected.data.ipv4Forwarding,
+              label: selected.label,
+              ...(selected.kind === 'router' ? { fwd: selected.ipv4Forwarding } : {}),
+              ...Object.fromEntries(
+                Object.values(selected.interfaces).flatMap((f, i) => [
+                  [`ip${i}`, f.ip ?? ''],
+                  [`mask${i}`, f.netmask ?? ''],
+                  [`gw${i}`, f.gateway ?? ''],
+                ]),
+              ),
             }}
             onFinish={(vals) => {
-              setNodes((nds) =>
-                nds.map((n) =>
-                  n.id === selected.id
-                    ? { ...n, data: { ...n.data, label: vals.label, ip: vals.ip, netmask: vals.mask, gateway: vals.gw, ipv4Forwarding: Boolean(vals.fwd) } }
-                    : n
-                )
-              );
-              setSelected(null);
+              const st = useStore.getState();
+              const patch: Partial<Device> = { label: vals.label };
+              if (selected.kind === 'router') patch.ipv4Forwarding = Boolean(vals.fwd);
+              st.updateDevice(selected.id, patch);
+              Object.values(selected.interfaces).forEach((f, i) => {
+                const ip = (vals[`ip${i}`] as string | undefined)?.trim() || null;
+                const mask = (vals[`mask${i}`] as string | undefined)?.trim() || null;
+                if (ip || mask) {
+                  st.updateInterface(selected.id, f.id, { ip, netmask: mask });
+                }
+                const gw = (vals[`gw${i}`] as string | undefined)?.trim() || null;
+                if (selected.kind !== 'router' && gw) {
+                  st.updateInterface(selected.id, f.id, { gateway: gw });
+                }
+              });
+              setSelectedId(null);
+              message.success(t('msg.saved'));
             }}
           >
             <Form.Item label={t('drawer.label')} name="label"><Input /></Form.Item>
-            <Form.Item label={t('drawer.ip')} name="ip"><Input /></Form.Item>
-            <Form.Item label={t('drawer.mask')} name="mask"><Input /></Form.Item>
-            <Form.Item label={t('drawer.gw')} name="gw"><Input /></Form.Item>
-            <Form.Item label={t('drawer.forwarding')} name="fwd" valuePropName="checked"><Switch /></Form.Item>
+            {selected.kind === 'switch' && (
+              <Form.Item>
+                <span style={{ color: '#999', fontSize: 12 }}>{t('drawer.switchL2')}</span>
+              </Form.Item>
+            )}
+            {selected.kind !== 'switch' && (
+              <>
+                {selected.kind === 'router' && (
+                  <Form.Item label={t('drawer.forwarding')} name="fwd" valuePropName="checked"><Switch /></Form.Item>
+                )}
+                <Form.Item label={t('drawer.interfaces')}>
+                  {Object.values(selected.interfaces).map((f, i) => (
+                    <div key={f.id} style={{ border: '1px solid #f0f0f0', borderRadius: 6, padding: '8px 10px', marginBottom: 8 }}>
+                      <div style={{ fontWeight: 600, marginBottom: 6, fontSize: 13 }}>{f.name}</div>
+                      <Space direction="vertical" style={{ width: '100%' }} size={4}>
+                        <Form.Item label={t('drawer.ip')} name={`ip${i}`} style={{ marginBottom: 4 }}><Input placeholder="0.0.0.0" /></Form.Item>
+                        <Form.Item label={t('drawer.mask')} name={`mask${i}`} style={{ marginBottom: 4 }}><Input placeholder="255.255.255.0" /></Form.Item>
+                        {selected.kind !== 'router' && (
+                          <Form.Item label={t('drawer.gw')} name={`gw${i}`} style={{ marginBottom: 0 }}><Input placeholder="192.168.1.1" /></Form.Item>
+                        )}
+                      </Space>
+                    </div>
+                  ))}
+                </Form.Item>
+              </>
+            )}
             <Form.Item label={t('drawer.services')}>
-              <Space>
-                <Tag color="blue">{t('svc.dhclient')}</Tag>
-                <Tag color="green">{t('svc.resolved')}</Tag>
-                <Tag>{t('svc.browser')}</Tag>
-              </Space>
+              {(() => {
+                const enabled = Object.entries(selected.services)
+                  .filter(([, svc]) => svc?.enabled)
+                  .map(([name]) => name);
+                if (selected.dhcpPool) enabled.push('dhcpd');
+                return enabled.length > 0 ? (
+                  <Space wrap>
+                    {enabled.map((name) => (
+                      <Tag key={name} color={name === 'dhcpd' ? 'blue' : 'green'}>{t(SERVICE_KEYS[name] ?? 'common.none')}</Tag>
+                    ))}
+                  </Space>
+                ) : (
+                  <span style={{ color: '#999' }}>{t('common.none')}</span>
+                );
+              })()}
+            </Form.Item>
+            <Form.Item label={t('drawer.routingTable')}>
+              <Table
+                size="small"
+                pagination={false}
+                columns={[
+                  { title: t('route.net'), dataIndex: 'net' },
+                  { title: t('route.nextHop'), dataIndex: 'hop' },
+                  { title: t('route.egress'), dataIndex: 'egress' },
+                ]}
+                dataSource={
+                  selected.routingTable.length > 0
+                    ? selected.routingTable.map((r, i) => ({
+                        key: String(i),
+                        net: `${r.network}/${r.netmask}`,
+                        hop: r.nextHop === '0.0.0.0' ? t('route.direct') : r.nextHop,
+                        egress: r.interfaceId,
+                      }))
+                    : [{ key: 'empty', net: t('route.empty'), hop: '', egress: '' }]
+                }
+              />
             </Form.Item>
             <Form.Item label={t('drawer.firewall')}>
               <Table
@@ -1169,10 +1367,11 @@ function Shell() {
                   { title: t('fw.protocol'), dataIndex: 'p' },
                   { title: t('fw.action'), dataIndex: 'a' },
                 ]}
-                dataSource={[
-                  { key: '1', p: 'all', a: 'ACCEPT' },
-                  { key: '2', p: 'tcp/22', a: 'DROP' },
-                ]}
+                dataSource={
+                  selected.firewall.rules.length > 0
+                    ? selected.firewall.rules.map((r, i) => ({ key: String(i), p: r.protocol ?? 'all', a: r.action }))
+                    : [{ key: 'none', p: t('common.none'), a: '' }]
+                }
               />
             </Form.Item>
             <Button type="primary" htmlType="submit" block>
@@ -1266,7 +1465,7 @@ function Shell() {
         </Card>
       ))}
 
-      {/* DHCP 租约悬浮窗 */}
+      {/* DHCP 租约悬浮窗（静态示例；WF-17 接真实租约） */}
       {leaseWin && (
         <Card
           size="small"
@@ -1307,9 +1506,11 @@ function Shell() {
 export default function AppPrototype() {
   return (
     <ConfigProvider locale={zhCN} theme={{ token: { colorPrimary: '#1677ff', borderRadius: 6 } }}>
-      <ReactFlowProvider>
-        <Shell />
-      </ReactFlowProvider>
+      <AntApp>
+        <ReactFlowProvider>
+          <Shell />
+        </ReactFlowProvider>
+      </AntApp>
     </ConfigProvider>
   );
 }
