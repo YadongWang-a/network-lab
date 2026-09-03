@@ -35,6 +35,7 @@ status: open
 - **[i18n = react-i18next 已落地]**（WF-8 已决）— 全部界面文案进 zh/en locale（~110 key），中文默认；协议/命令名保留原文；main.tsx 初始化顺序修正。实测通过。
 - **[报文可视化 = 事件驱动两级架构]**（WF-5 已决）— 引擎单向发事件（`SimulationEngine.on`），可视化层 `simEventToViz` 纯函数翻译为动画动作；`ProtocolViz` 插件（id/label/color + match/animate 钩子）静态装配进 `VizRegistry`，色码为可配置元数据；store 只存意图态（开关/速度/暂停/报文历史），动画帧为组件 ephemeral；画布几何经适配器解耦。落点 `src/visualization/registry.ts`（已抽离，原型已改用），事件接线/钩子排 WF-14。解锁 WF-12（可视化单测）、WF-14。
 - **[设备级自动配置 IPAM = 子网池 + 网关惯例]**（WF-6 已决）— `src/domain/ipam.ts` 纯函数子网池（默认 192.168.1.0/24、10.0.0.0/24、172.16.0.0/24）；路由器每接口占一子网网关 .1（被占顺延下一空闲主机），终端设备从 .2 起分配；DHCP 服务器自动生成服务范围 .100–.254；「已占用」集合由拓扑扫描得出（冲突检测），手动覆盖（updateInterface）后后续分配自动跳过；池耗尽抛中文错误。`store.addDevice` 自动接入，原型拖放同源（`src/domain/deviceFactory.ts`）。解锁 WF-7（复用 ipam 纯计算）。
+- **[拓扑级路由自动生成 = 网段图 Dijkstra + 触发整表重算]**（WF-7 已决）— `src/domain/routing.ts` 纯函数：节点 = (交换机, 子网) 的**线缆感知**网段图（只纳入已连线且有 IP 的路由器接口，规避 WF-6 默认子网下 legacy 无缆算法的「全网直连」失效），路由器为段间桥，多点源 Dijkstra 求最短跳数，next-hop = 桥接路由器在共享网段上的接口 IP；直连条目一并生成（nextHop 0.0.0.0），同 next-hop 远端 >1 条时按 legacy 收拢为 0.0.0.0/0 默认路由。store 新增 `addConnection`/`removeConnection`，拓扑动作（设备增删、连线变化、IP/掩码变更）统一经 `applyRouting` 整表重算写回各路由器 `routingTable`；跨交换机同名子网不互通，断线/删除即清陈旧条目。**拓扑连通即通、无需手填路由**（引擎消费留 WF-11/14 接线）。
 
 ## Not yet specified（fog）
 

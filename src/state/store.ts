@@ -11,8 +11,9 @@ import type {
   Vec2,
 } from '@/domain/types';
 import { DEFAULT_SUBNETS, isValidCidr } from '@/domain/ipam';
-import type { Cidr } from '@/domain/types';
+import type { Cidr, Connection } from '@/domain/types';
 import { createDevice, KIND_LABEL } from '@/domain/deviceFactory';
+import { computeRouterRoutingTables } from '@/domain/routing';
 
 // 切片结构（WF-2 归一化 + WF-3 事件可视化）：
 // - devices：拓扑与全部设备状态（引擎读写、UI 订阅）
@@ -23,6 +24,23 @@ import { createDevice, KIND_LABEL } from '@/domain/deviceFactory';
 
 /** 设备 id / 默认标签的单调序号（WF-13 存档加载时再处理 id 冲突）。 */
 let deviceSeq = 0;
+/** 连线 id 的单调序号（store 生命周期内唯一即可）。 */
+let connSeq = 0;
+
+/**
+ * 拓扑变更后重算全部路由器路由表并写回（WF-7）。纯计算失败/无变化时返回原对象，
+ * 便于调用方原样合并。所有拓扑动作（设备增删、连线变化、IP/掩码变更）都经此收口。
+ */
+function applyRouting(topology: Topology): Topology {
+  const tables = computeRouterRoutingTables(topology);
+  let devices = topology.devices;
+  for (const [id, rows] of Object.entries(tables)) {
+    const dev = devices[id];
+    if (!dev || !dev.ipv4Forwarding) continue;
+    devices = { ...devices, [id]: { ...dev, routingTable: rows } };
+  }
+  return devices === topology.devices ? topology : { ...topology, devices };
+}
 
 export interface DevicesSlice {
   topology: Topology;
@@ -43,6 +61,17 @@ export interface DevicesSlice {
     interfaceId: InterfaceId,
     patch: Partial<NetworkInterface>,
   ) => void;
+  /**
+   * 拉线：设备接口 → 交换机端口（WF-7）。写 topology.connections + 接口
+   * connectedSwitchId，随即重算路由。对端必须是交换机；接口已连线则抛中文错误。
+   */
+  addConnection: (
+    deviceId: DeviceId,
+    interfaceId: InterfaceId,
+    switchId: DeviceId,
+  ) => void;
+  /** 断线：按 (设备, 接口) 移除对应连线并清 connectedSwitchId，随即重算路由。幂等。 */
+  removeConnection: (deviceId: DeviceId, interfaceId: InterfaceId) => void;
 }
 
 export interface VisualizationSlice {
@@ -95,11 +124,12 @@ export const useStore = create<StoreState>((set) => ({
         usedIps: used,
         subnets: s.config.subnetPool.subnets,
       });
+      // WF-7：新设备尚无连线，路由表不变（返回原对象），统一走 applyRouting 收口。
       return {
-        topology: {
+        topology: applyRouting({
           ...s.topology,
           devices: { ...s.topology.devices, [id]: device },
-        },
+        }),
       };
     });
     return id;
@@ -108,25 +138,47 @@ export const useStore = create<StoreState>((set) => ({
     set((s) => {
       const devices = { ...s.topology.devices };
       delete devices[id];
-      return { topology: { ...s.topology, devices } };
+      // 残留接线清理：删除指向被删设备（作为连线对端交换机）或由其发出的连线，
+      // 并清空幸存设备接口上指向被删交换机的 connectedSwitchId。
+      const connections = s.topology.connections.filter(
+        (c) => c.fromDeviceId !== id && c.toSwitchId !== id,
+      );
+      for (const devId of Object.keys(devices)) {
+        const d = devices[devId];
+        for (const ifaceId of Object.keys(d.interfaces)) {
+          const iface = d.interfaces[ifaceId];
+          if (iface.connectedSwitchId === id) {
+            devices[devId] = {
+              ...d,
+              interfaces: {
+                ...d.interfaces,
+                [ifaceId]: { ...iface, connectedSwitchId: null },
+              },
+            };
+          }
+        }
+      }
+      // WF-7：路由重算 —— 删路由器后其远端条目与途经它的 next-hop 一并消失。
+      return { topology: applyRouting({ devices, connections }) };
     }),
   updateDevice: (id, patch) =>
     set((s) => {
       const dev = s.topology.devices[id];
       if (!dev) return {};
-      return {
-        topology: {
-          ...s.topology,
-          devices: { ...s.topology.devices, [id]: { ...dev, ...patch } },
-        },
-      };
+      const next = { ...s.topology, devices: { ...s.topology.devices, [id]: { ...dev, ...patch } } };
+      // 只在与路由相关的键变化时才重算（位置/标签等高频更新不触发）。
+      if ('interfaces' in patch || 'ipv4Forwarding' in patch) {
+        return { topology: applyRouting(next) };
+      }
+      return { topology: next };
     }),
   updateInterface: (deviceId, interfaceId, patch) =>
     set((s) => {
       const dev = s.topology.devices[deviceId];
       if (!dev || !dev.interfaces[interfaceId]) return {};
+      // WF-7：IP/掩码变更改变网段归属，需重算路由。
       return {
-        topology: {
+        topology: applyRouting({
           ...s.topology,
           devices: {
             ...s.topology.devices,
@@ -138,7 +190,79 @@ export const useStore = create<StoreState>((set) => ({
               },
             },
           },
-        },
+        }),
+      };
+    }),
+  addConnection: (deviceId, interfaceId, switchId) =>
+    set((s) => {
+      const dev = s.topology.devices[deviceId];
+      if (!dev) throw new Error(`设备不存在：${deviceId}`);
+      const iface = dev.interfaces[interfaceId];
+      if (!iface) throw new Error(`接口不存在：${deviceId}.${interfaceId}`);
+      const sw = s.topology.devices[switchId];
+      if (!sw || sw.kind !== 'switch') throw new Error(`线缆只能连接到交换机：${switchId}`);
+      if (
+        iface.connectedSwitchId ||
+        s.topology.connections.some((c) => c.fromDeviceId === deviceId && c.fromInterfaceId === interfaceId)
+      ) {
+        throw new Error(`接口 ${deviceId}.${interfaceId} 已连接，请先断开`);
+      }
+      // 交换机端口号取现有最大 +1（引擎 MAC 表端口引用）。
+      const toPort =
+        s.topology.connections.reduce(
+          (max, c) => (c.toSwitchId === switchId ? Math.max(max, c.toPort) : max),
+          0,
+        ) + 1;
+      const connection: Connection = {
+        id: `conn-${connSeq}`,
+        fromDeviceId: deviceId,
+        fromInterfaceId: interfaceId,
+        toSwitchId: switchId,
+        toPort,
+      };
+      connSeq += 1;
+      // WF-7：新网段/新桥出现 → 重算路由。
+      return {
+        topology: applyRouting({
+          ...s.topology,
+          devices: {
+            ...s.topology.devices,
+            [deviceId]: {
+              ...dev,
+              interfaces: {
+                ...dev.interfaces,
+                [interfaceId]: { ...iface, connectedSwitchId: switchId },
+              },
+            },
+          },
+          connections: [...s.topology.connections, connection],
+        }),
+      };
+    }),
+  removeConnection: (deviceId, interfaceId) =>
+    set((s) => {
+      const dev = s.topology.devices[deviceId];
+      if (!dev || !dev.interfaces[interfaceId]) return {}; // 幂等
+      const iface = dev.interfaces[interfaceId];
+      if (!iface.connectedSwitchId) return {}; // 未连线
+      // WF-7：断线 → 该接口退出网段图 → 重算路由。
+      return {
+        topology: applyRouting({
+          ...s.topology,
+          devices: {
+            ...s.topology.devices,
+            [deviceId]: {
+              ...dev,
+              interfaces: {
+                ...dev.interfaces,
+                [interfaceId]: { ...iface, connectedSwitchId: null },
+              },
+            },
+          },
+          connections: s.topology.connections.filter(
+            (c) => !(c.fromDeviceId === deviceId && c.fromInterfaceId === interfaceId),
+          ),
+        }),
       };
     }),
 
