@@ -6,6 +6,7 @@
   "sim.pause": "Pause",
   "sim.step": "Step",
   "sim.resume": "Resume",
+  "sim.reset": "Reset",
   "canvas.connectMode": "Connect mode: click source device, then target device",
   "canvas.pickSource": "Click source device (A)",
   "canvas.pickTarget": "Click target device (B)",

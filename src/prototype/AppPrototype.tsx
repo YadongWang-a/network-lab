@@ -23,7 +23,7 @@ import {
   Card,
   Space,
 } from 'antd';
-import { FolderOpenOutlined, PlusOutlined, CaretRightOutlined, CodeOutlined, TableOutlined, RightOutlined, LeftOutlined, PauseCircleOutlined, StepForwardOutlined } from '@ant-design/icons';
+import { FolderOpenOutlined, PlusOutlined, CaretRightOutlined, CodeOutlined, TableOutlined, RightOutlined, LeftOutlined, PauseCircleOutlined, StepForwardOutlined, ReloadOutlined } from '@ant-design/icons';
 import zhCN from 'antd/locale/zh_CN';
 import type { Layer, Packet } from '@/domain/types';
 import { DEFAULT_SUBNETS, SubnetPool } from '@/domain/ipam';
@@ -370,6 +370,9 @@ function Shell() {
   const [vizDots, setVizDots] = useState<Array<{ id: number; x: number; y: number; hex: string; seq: number }>>([]);
   const [flashEdgeId, setFlashEdgeId] = useState<string | null>(null);
   const vizSeq = useRef(0);
+  const runGen = useRef(0); // 复位代数：递增使进行中的动画失效
+  const hoppingRef = useRef(false); // 跳动画互斥：同一时刻只允许一跳
+  const loopTokenRef = useRef(0); // 播放循环令牌：新循环使旧循环失效
   const seq = useRef(0);
   const { screenToFlowPosition } = useReactFlow();
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -566,7 +569,7 @@ function Shell() {
     return { x: r.x + r.width / 2 - cr.x, y: r.y + r.height / 2 - cr.y };
   }
 
-  async function animateHop(hop: { fromId: string; toId: string; proto: string }, seq: number) {
+  async function animateHop(hop: { fromId: string; toId: string; proto: string }, seq: number, gen: number = runGen.current) {
     const a = nodeCenterOnScreen(hop.fromId);
     const b = nodeCenterOnScreen(hop.toId);
     if (!a || !b) return;
@@ -577,9 +580,57 @@ function Shell() {
     const steps = 12;
     for (let i = 1; i <= steps; i++) {
       await waitMs(40);
+      if (runGen.current !== gen) {
+        setVizDots((ds) => ds.filter((d) => d.id !== dotId));
+        return;
+      }
       setVizDots((ds) => ds.map((d) => (d.id === dotId ? { ...d, x: a.x + ((b.x - a.x) * i) / steps, y: a.y + ((b.y - a.y) * i) / steps } : d)));
     }
     setVizDots((ds) => ds.filter((d) => d.id !== dotId));
+  }
+
+  // 沿拓扑边求 fromId→toId 的最短节点路径（BFS）；不连通返回 null
+  function nodePathBetween(fromId: string, toId: string): string[] | null {
+    if (fromId === toId) return [fromId];
+    const prev = new Map<string, string | null>([[fromId, null]]);
+    const queue = [fromId];
+    while (queue.length) {
+      const cur = queue.shift()!;
+      if (cur === toId) break;
+      for (const e of edges) {
+        const nb = e.source === cur ? e.target : e.target === cur ? e.source : null;
+        if (nb && !prev.has(nb)) {
+          prev.set(nb, cur);
+          queue.push(nb);
+        }
+      }
+    }
+    if (!prev.has(toId)) return null;
+    const path: string[] = [];
+    for (let cur: string | null = toId; cur !== null; cur = prev.get(cur) ?? null) path.unshift(cur);
+    return path;
+  }
+
+  // 报文沿物理路径逐段移动：途经交换机/路由器可见，并闪烁经过的链路
+  async function animatePath(fromId: string, toId: string, proto: string, seq: number) {
+    const gen = runGen.current;
+    const path = nodePathBetween(fromId, toId);
+    if (!path || path.length < 2) {
+      // 不连通或无连线：退化为直线飞行
+      await animateHop({ fromId, toId, proto }, seq, gen);
+      return;
+    }
+    for (let i = 0; i < path.length - 1; i++) {
+      await animateHop({ fromId: path[i], toId: path[i + 1], proto }, seq, gen);
+      if (runGen.current !== gen) return;
+      const eid = edges.find((e) => (e.source === path[i] && e.target === path[i + 1]) || (e.source === path[i + 1] && e.target === path[i]))?.id;
+      if (eid) {
+        setFlashEdgeId(eid);
+        await waitMs(320);
+        if (runGen.current !== gen) return;
+        setFlashEdgeId(null);
+      }
+    }
   }
 
   // 点击追踪行：重放该报文对应的画布动画（WF-5 续）。演示命令行直接用记录的节点；
@@ -587,7 +638,7 @@ function Shell() {
   function replayHop(row: TraceRow) {
     const fromId = row.fromId ?? nodes.find((n) => n.data.ip === row.src)?.id;
     const toId = row.toId ?? nodes.find((n) => n.data.ip === row.dst)?.id;
-    if (fromId && toId) void animateHop({ fromId, toId, proto: row.proto }, 1);
+    if (fromId && toId) void animatePath(fromId, toId, row.proto, 1);
   }
 
   // —— WF-3 仿真控制器：开始 / 暂停 / 单步 / 恢复 ——
@@ -641,9 +692,9 @@ function Shell() {
       add('tcp', sip, dip, 'Telnet 会话建立', mkPacket([ethLayer(dmac, smac), ipLayer(sip, dip, 'tcp'), tcpLayer(49152, 23, 1001, 3001, false, true)]), srcNodeId, dstNodeId);
     }
     if (cmdKind === 'traceroute') {
-      
+     
       add('icmp', sip, dip, `TTL=1 探测`, mkPacket([ethLayer(dmac, smac), ipLayer(sip, dip, 'icmp', 1), { kind: 'icmp', type: 'echo-request' }]), srcNodeId, dstNodeId);
-      add('icmp', dip, sip, i18n.t('gen.timeExceeded', { hop: '1' }), mkPacket([ethLayer(smac, dmac), ipLayer(dip, sip, 'icmp', 1), { kind: 'icmp', type: 'time-exceeded' }]), dstNodeId, srcNodeId);
+      add('icmp', dip, sip, i18n.t('gen.timeExceeded', { hop: '1' }), mkPacket([ethLayer(smac, dmac), ipLayer(dip, sip, 'icmp'), { kind: 'icmp', type: 'time-exceeded' }]), dstNodeId, srcNodeId);
       add('icmp', sip, dip, `TTL=2 探测`, mkPacket([ethLayer(dmac, smac), ipLayer(sip, dip, 'icmp', 2), { kind: 'icmp', type: 'echo-request' }]), srcNodeId, dstNodeId);
       add('icmp', dip, sip, i18n.t('gen.echoReply'), mkPacket([ethLayer(smac, dmac), ipLayer(dip, sip, 'icmp'), { kind: 'icmp', type: 'echo-reply' }]), dstNodeId, srcNodeId);
     }
@@ -673,27 +724,37 @@ function Shell() {
     return { rows, pkts, hops };
   }
 
-  async function animateNextHop() {
+  async function animateNextHop(): Promise<boolean> {
     const sim = simRef.current;
-    if (!sim || sim.index >= sim.hops.length) return;
-    const hop = sim.hops[sim.index];
-    await animateHop(hop, sim.index + 1);
-    const eid = edges.find((e) => (e.source === hop.fromId && e.target === hop.toId) || (e.source === hop.toId && e.target === hop.fromId))?.id;
-    if (eid) {
-      setFlashEdgeId(eid);
-      await waitMs(320);
-      setFlashEdgeId(null);
+    if (!sim || sim.index >= sim.hops.length || hoppingRef.current) return false;
+    hoppingRef.current = true;
+    try {
+      const gen = runGen.current;
+      const hop = sim.hops[sim.index];
+      await animatePath(hop.fromId, hop.toId, hop.proto, sim.index + 1);
+      if (runGen.current !== gen) return false; // 复位打断：丢弃本跳
+      // 先捕获当前行：updater 在渲染时才求值，届时 index 已递增，
+      // 在 updater 内读 sim.index 会取错行甚至越界（undefined → List 崩溃）
+      const row = sim.rows[sim.index];
+      const pkt = sim.pkts[sim.index];
+      setTraces((ts) => [...ts, row]);
+      setTracePkts((ps) => [...ps, pkt]);
+      sim.index++;
+      return true;
+    } finally {
+      hoppingRef.current = false;
     }
-    setTraces((ts) => [...ts, sim.rows[sim.index]]);
-    setTracePkts((ps) => [...ps, sim.pkts[sim.index]]);
-    sim.index++;
   }
 
   async function runLoop() {
-    while (simStateRef.current === 'running' && simRef.current && simRef.current.index < simRef.current.hops.length) {
-      await animateNextHop();
+    const gen = runGen.current;
+    const token = ++loopTokenRef.current; // 新循环使旧循环在下一检查点退出
+    while (simStateRef.current === 'running' && runGen.current === gen && simRef.current && simRef.current.index < simRef.current.hops.length) {
+      const advanced = await animateNextHop();
+      if (loopTokenRef.current !== token) return; // 被新循环接替
+      if (!advanced) await waitMs(50);
     }
-    if (simRef.current && simRef.current.index >= simRef.current.hops.length) {
+    if (loopTokenRef.current === token && runGen.current === gen && simRef.current && simRef.current.index >= simRef.current.hops.length) {
       simStateRef.current = 'finished';
       setSimState('finished');
     }
@@ -702,6 +763,7 @@ function Shell() {
   function startSim() {
     const seq = buildSequence();
     if (!seq) return;
+    runGen.current += 1; // 使进行中的单步动画失效
     simRef.current = { ...seq, index: 0 };
     simStateRef.current = 'running';
     setSimState('running');
@@ -709,17 +771,8 @@ function Shell() {
     setTracePkts([]);
     setDetails([]);
     setTraceOpen(true);
-    // 播放第一跳后自动暂停，让用户可以用单步或恢复控制后续
-    void (async () => {
-      await animateNextHop();
-      if (simStateRef.current === 'running' && simRef.current && simRef.current.index < simRef.current.hops.length) {
-        simStateRef.current = 'paused';
-        setSimState('paused');
-      } else if (simRef.current && simRef.current.index >= simRef.current.hops.length) {
-        simStateRef.current = 'finished';
-        setSimState('finished');
-      }
-    })();
+    // 自动播放：由 runLoop 持续推进，直到暂停或播完
+    void runLoop();
   }
 
   function pauseSim() {
@@ -728,24 +781,28 @@ function Shell() {
   }
 
   async function stepSim() {
-    if (simState === 'finished') return;
+    if (simState !== 'idle' && simState !== 'paused') return;
+    if (hoppingRef.current) return; // 上一跳动画进行中，忽略本次点击
+    const gen = runGen.current;
     if (simState === 'idle') {
-      // 空闲：构建序列 + 播放第一跳 + 自动暂停
-      startSim();
-      return;
+      // 空闲：构建序列，只播放第一跳
+      const seq = buildSequence();
+      if (!seq) return;
+      simRef.current = { ...seq, index: 0 };
+      setTraces([]);
+      setTracePkts([]);
+      setDetails([]);
+      setTraceOpen(true);
     }
-    if (simState === 'running') {
-      // 正在运行：先暂停再走一跳
-      simStateRef.current = 'paused';
-      setSimState('paused');
-      return;
-    }
-    // paused：走一跳
     if (!simRef.current) return;
     await animateNextHop();
+    if (runGen.current !== gen || simStateRef.current === 'running') return; // 复位打断，或恢复播放已接管状态
     if (simRef.current.index >= simRef.current.hops.length) {
       simStateRef.current = 'finished';
       setSimState('finished');
+    } else {
+      simStateRef.current = 'paused';
+      setSimState('paused');
     }
   }
 
@@ -754,6 +811,24 @@ function Shell() {
     setSimState('running');
     void runLoop();
   }
+
+  function resetSim() {
+    runGen.current += 1; // 使进行中的动画全部失效
+    simStateRef.current = 'idle';
+    setSimState('idle');
+    simRef.current = null;
+    setTraces([]);
+    setTracePkts([]);
+    setDetails([]);
+    setVizDots([]);
+    setFlashEdgeId(null);
+  }
+
+  // 改变演示参数后旧序列作废：自动复位
+  useEffect(() => {
+    if (simStateRef.current !== 'idle') resetSim();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [srcId, dstId, cmdKind]);
 
   // 原生 click 监听：节点选择 → 打开配置抽屉（按钮点击已排除）
   useEffect(() => {
@@ -855,7 +930,7 @@ function Shell() {
                   value={targetPort}
                   onChange={(e) => setTargetPort(e.target.value)}
                   placeholder={cmdKind === 'ftp' ? '21' : cmdKind === 'telnet' ? '23' : '8080'}
-                  style={{ width: 70 }}
+                  style={{ width: 130 }}
                   size="small"
                   addonBefore={cmdKind === 'telnet' ? 'Telnet' : cmdKind === 'ftp' ? 'FTP' : 'Port'}
                 />
@@ -867,12 +942,15 @@ function Shell() {
               {t('sim.pause')}
             </Button>
           ) : (
-            <Button size="small" type="primary" icon={<CaretRightOutlined />} onClick={simState === 'paused' ? resumeSim : startSim}>
+            <Button size="small" type="primary" icon={<CaretRightOutlined />} onClick={simState === 'paused' ? resumeSim : startSim} disabled={simState === 'finished'}>
               {simState === 'paused' ? t('sim.resume') : t('sim.start')}
             </Button>
           )}
           <Button size="small" icon={<StepForwardOutlined />} onClick={stepSim} disabled={simState === 'running' || simState === 'finished'}>
             {t('sim.step')}
+          </Button>
+          <Button size="small" icon={<ReloadOutlined />} onClick={resetSim} disabled={simState === 'idle'}>
+            {t('sim.reset')}
           </Button>
         </div>
 
