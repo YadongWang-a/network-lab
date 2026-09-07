@@ -4,8 +4,8 @@
  *   拖动位置、删除一律经 store 动作写回（WF-6 自动分配 / WF-7 自动路由随之生效）。
  * - 连线语义：线缆一端为设备接口、另一端为交换机（WF-14 决策）；路由器多接口按空闲
  *   顺序接线（enp0s3 → enp0s8 → enp0s9）。
- * - 仿真仍为原型假引擎（buildSequence + waitMs 本地定时），由 WF-16 换为真实
- *   SimulationEngine；报文追踪/悬浮窗/动画为 UI 壳，形态保留。
+ * - 仿真双轨（WF-16）：ping/traceroute 由真实 SimulationEngine 驱动；其余演示命令
+ *   仍走原型假序列（buildSequence + waitMs），随 WF-17 逐个转真。追踪/详情/动画为 UI 壳。
  * - 全部界面文案接入 react-i18next（中文默认）。
  */
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
@@ -32,6 +32,7 @@ import zhCN from 'antd/locale/zh_CN';
 import type { Device, DeviceId, DeviceKind, Layer, Packet } from '@/domain/types';
 import { useStore } from '@/state/store';
 import { viz } from '@/visualization/registry';
+import { SimulationEngine, protoOf, type SimEvent } from '@/engine/SimulationEngine';
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -176,6 +177,25 @@ const traceData: TraceRow[] = [
 // 示例报文（WF-2 层栈模型）：供"报文详情"悬浮窗逐层展示
 function mkPacket(layers: Layer[], xid?: number): Packet {
   return { id: `pkt-${Math.random().toString(16).slice(2, 8)}`, layers, xid, createdAt: Date.now() };
+}
+
+/** 引擎事件报文 → 追踪行（src/dst/proto 从层栈推导；ARP 请求目的记 '?'）。 */
+function rowOfPacket(p: Packet, info: string, seq: number): TraceRow {
+  const arp = p.layers.find((l) => l.kind === 'arp');
+  const ipL = p.layers.find((l) => l.kind === 'ip');
+  let proto = 'unicast';
+  let src = '';
+  let dst = '';
+  if (arp?.kind === 'arp') {
+    proto = 'arp';
+    src = arp.senderIp;
+    dst = arp.op === 'request' ? '?' : arp.targetIp;
+  } else if (ipL?.kind === 'ip') {
+    proto = ipL.protocol;
+    src = ipL.srcIp;
+    dst = ipL.dstIp;
+  }
+  return { key: `e-${p.id}`, seq, time: (seq * 0.001).toFixed(3), proto, src, dst, info };
 }
 
 const tracePackets: Packet[] = [
@@ -467,6 +487,20 @@ function Shell() {
   const { screenToFlowPosition } = useReactFlow();
   const canvasRef = useRef<HTMLDivElement>(null);
 
+  // —— 真引擎（WF-16）：ping/traceroute 由 SimulationEngine 驱动，读 store / 写回设备状态 ——
+  const engine = useMemo(
+    () =>
+      new SimulationEngine({
+        getTopology: () => useStore.getState().topology,
+        patchDevice: (id, patch) => useStore.getState().updateDevice(id, patch),
+      }),
+    [],
+  );
+  /** 引擎模式报文旅程：packetId →（首跳起点，定向交付终点）。 */
+  const journeysRef = useRef<Map<string, { from: DeviceId; to?: DeviceId }>>(new Map());
+  const rowSeqRef = useRef(0);
+  const cmdIsEngine = cmdKind === 'ping' || cmdKind === 'traceroute';
+
   // 首次挂载灌入演示种子（StrictMode 双调用由 seededOnce 幂等化）
   useEffect(() => {
     if (seededOnce.current) return;
@@ -531,6 +565,7 @@ function Shell() {
   // 拖放建设备（WF-6 语义走 store.addDevice，含 apache2 → pc+apache2 服务归并）
   function onDropDevice(e: React.DragEvent<HTMLDivElement>) {
     e.preventDefault();
+    e.stopPropagation(); // 同一 handler 挂在外层 div 与 ReactFlow 两层：阻止冒泡二次建设备
     const kind = e.dataTransfer.getData('text/plain') as Kind;
     const devKind = storeKindOf(kind);
     if (!devKind) return;
@@ -763,7 +798,98 @@ function Shell() {
     const devs = Object.values(useStore.getState().topology.devices);
     const fromId = row.fromId ?? devs.find((d) => ifaceIp(d) === row.src)?.id;
     const toId = row.toId ?? devs.find((d) => ifaceIp(d) === row.dst)?.id;
-    if (fromId && toId) void animatePath(fromId, toId, row.proto, 1);
+    if (fromId && toId && toId !== fromId) {
+      void animatePath(fromId, toId, row.proto, 1);
+      return;
+    }
+    // 广播/洪泛行（引擎行无定向交付终点）：向所有邻居逐个重放
+    if (fromId) void replayFlood(fromId, row.proto);
+  }
+
+  // —— 真引擎驱动（WF-16）：动画与追踪行都由引擎事件生成（WF-5 事件驱动两级架构）——
+  /** 广播行重播：从源设备向每个邻居逐跳重放洪泛。 */
+  async function replayFlood(fromId: string, proto: string) {
+    const neighbors = edges.flatMap((e) => (e.source === fromId ? [e.target] : e.target === fromId ? [e.source] : []));
+    for (const n of neighbors) await animateHopPhys(fromId, n, proto);
+  }
+  async function animateHopPhys(fromId: string, toId: string, proto: string) {
+    const gen = runGen.current;
+    await animateHop({ fromId, toId, proto }, vizSeq.current);
+    if (runGen.current !== gen) return;
+    const eid = edges.find((e) => (e.source === fromId && e.target === toId) || (e.source === toId && e.target === fromId))?.id;
+    if (eid) {
+      setFlashEdgeId(eid);
+      await waitMs(320);
+      if (runGen.current !== gen) return;
+      setFlashEdgeId(null);
+    }
+  }
+
+  /** 引擎事件 → 画布动画 + 追踪行。首跳建行（fromId=起点）；仅「定向交付」跳更新
+   *  终点 toId（洪泛拷贝不改写终点），重播按 toId 走完整路径、无 toId 时重放洪泛。 */
+  async function consumeEngineEvent(ev: SimEvent) {
+    if (ev.type === 'dropped') {
+      message.warning(ev.reason);
+      return;
+    }
+    const gen = runGen.current;
+    await animateHopPhys(ev.from, ev.to, protoOf(ev.packet));
+    if (runGen.current !== gen) return;
+    const seen = journeysRef.current.get(ev.packet.id);
+    if (!seen) {
+      journeysRef.current.set(ev.packet.id, { from: ev.from, to: ev.delivered ? ev.to : undefined });
+      rowSeqRef.current += 1;
+      const row: TraceRow = { ...rowOfPacket(ev.packet, ev.info ?? '', rowSeqRef.current), fromId: ev.from };
+      if (ev.delivered) row.toId = ev.to;
+      setTraces((ts) => [...ts, row]);
+      setTracePkts((ps) => [...ps, ev.packet]);
+    } else if (ev.delivered) {
+      seen.to = ev.to;
+      const key = `e-${ev.packet.id}`;
+      setTraces((ts) => ts.map((r) => (r.key === key ? { ...r, toId: ev.to } : r)));
+    }
+  }
+
+  /** 启动真引擎命令（ping/traceroute）：校验选择 → 复位引擎与追踪 → 异步发起。 */
+  function beginEngineOp(): boolean {
+    const st = useStore.getState();
+    const src = srcId ? st.topology.devices[srcId] : undefined;
+    const dst = dstId ? st.topology.devices[dstId] : undefined;
+    const dstIp = dst ? ifaceIp(dst) : null;
+    if (!src || !dstIp || !ifaceIp(src)) {
+      message.warning(t('sim.pickIncomplete'));
+      return false;
+    }
+    engine.reset();
+    journeysRef.current = new Map();
+    rowSeqRef.current = 0;
+    setTraces([]);
+    setTracePkts([]);
+    setDetails([]);
+    setTraceOpen(true);
+    void (cmdKind === 'ping' ? engine.ping(srcId!, dstIp) : engine.traceroute(srcId!, dstIp));
+    return true;
+  }
+
+  /** 引擎播放循环：逐跳 step→动画→追踪；队列排空且引擎收敛 → 播完。 */
+  async function runEngineLoop() {
+    const gen = runGen.current;
+    const token = ++loopTokenRef.current; // 新循环使旧循环在下一检查点退出
+    for (;;) {
+      if (simStateRef.current !== 'running' || runGen.current !== gen || loopTokenRef.current !== token) return;
+      const ev = engine.step();
+      if (!ev) {
+        await waitMs(30); // 让处理续延（ARP/应答 Promise）入队
+        if (loopTokenRef.current !== token) return;
+        if (engine.isIdle()) break;
+        continue;
+      }
+      await consumeEngineEvent(ev);
+    }
+    if (loopTokenRef.current === token && runGen.current === gen && simStateRef.current === 'running') {
+      simStateRef.current = 'finished';
+      setSimState('finished');
+    }
   }
 
   // —— 假仿真序列合成（WF-16 换真实引擎；数据源 = store 设备真身）——
@@ -796,10 +922,6 @@ function Shell() {
       ]);
     add('arp', sip, dip, i18n.t('gen.arpWho', { dst: dip, src: sip }), arpPkt('request', smac, dmac, sip, dip), srcNodeId, dstNodeId);
     add('arp', dip, sip, i18n.t('gen.arpAt', { ip: dip, mac: dmac }), arpPkt('reply', dmac, smac, dip, sip), dstNodeId, srcNodeId);
-    if (cmdKind === 'ping') {
-      add('icmp', sip, dip, i18n.t('gen.echoReq'), mkPacket([ethLayer(dmac, smac), ipLayer(sip, dip, 'icmp'), { kind: 'icmp', type: 'echo-request' }]), srcNodeId, dstNodeId);
-      add('icmp', dip, sip, i18n.t('gen.echoReply'), mkPacket([ethLayer(smac, dmac), ipLayer(dip, sip, 'icmp'), { kind: 'icmp', type: 'echo-reply' }]), dstNodeId, srcNodeId);
-    }
     if (cmdKind === 'tcp' || cmdKind === 'http' || cmdKind === 'ftp' || cmdKind === 'telnet') {
       const port = cmdKind === 'http' ? 80 : cmdKind === 'ftp' ? 21 : cmdKind === 'telnet' ? 23 : parseInt(targetPort) || 8080;
       add('tcp', sip, dip, i18n.t('gen.syn'), mkPacket([ethLayer(dmac, smac), ipLayer(sip, dip, 'tcp'), tcpLayer(49152, port, 1000, 0, true, false)]), srcNodeId, dstNodeId);
@@ -816,12 +938,6 @@ function Shell() {
     }
     if (cmdKind === 'telnet') {
       add('tcp', sip, dip, 'Telnet 会话建立', mkPacket([ethLayer(dmac, smac), ipLayer(sip, dip, 'tcp'), tcpLayer(49152, 23, 1001, 3001, false, true)]), srcNodeId, dstNodeId);
-    }
-    if (cmdKind === 'traceroute') {
-      add('icmp', sip, dip, `TTL=1 探测`, mkPacket([ethLayer(dmac, smac), ipLayer(sip, dip, 'icmp', 1), { kind: 'icmp', type: 'echo-request' }]), srcNodeId, dstNodeId);
-      add('icmp', dip, sip, i18n.t('gen.timeExceeded', { hop: '1' }), mkPacket([ethLayer(smac, dmac), ipLayer(dip, sip, 'icmp'), { kind: 'icmp', type: 'time-exceeded' }]), dstNodeId, srcNodeId);
-      add('icmp', sip, dip, `TTL=2 探测`, mkPacket([ethLayer(dmac, smac), ipLayer(sip, dip, 'icmp', 2), { kind: 'icmp', type: 'echo-request' }]), srcNodeId, dstNodeId);
-      add('icmp', dip, sip, i18n.t('gen.echoReply'), mkPacket([ethLayer(smac, dmac), ipLayer(dip, sip, 'icmp'), { kind: 'icmp', type: 'echo-reply' }]), dstNodeId, srcNodeId);
     }
     if (cmdKind === 'dns') {
       const dnsDev = devs.find((d) => uiKindOf(d) === 'dnsserver');
@@ -888,9 +1004,16 @@ function Shell() {
   }
 
   function startSim() {
+    runGen.current += 1; // 使进行中的单步动画失效
+    if (cmdIsEngine) {
+      if (!beginEngineOp()) return;
+      simStateRef.current = 'running';
+      setSimState('running');
+      void runEngineLoop();
+      return;
+    }
     const seq = buildSequence();
     if (!seq) return;
-    runGen.current += 1; // 使进行中的单步动画失效
     simRef.current = { ...seq, index: 0 };
     simStateRef.current = 'running';
     setSimState('running');
@@ -909,6 +1032,22 @@ function Shell() {
 
   async function stepSim() {
     if (simState !== 'idle' && simState !== 'paused') return;
+    if (cmdIsEngine) {
+      // 真引擎：空闲时先发起命令，再推进一跳；推进后保持暂停/播完
+      if (simState === 'idle' && !beginEngineOp()) return;
+      simStateRef.current = 'paused';
+      setSimState('paused');
+      const gen = runGen.current;
+      const ev = engine.step();
+      if (ev) await consumeEngineEvent(ev);
+      if (runGen.current !== gen) return; // 复位打断
+      await waitMs(30); // 让处理续延（ARP/应答 Promise）入队
+      if (engine.isIdle()) {
+        simStateRef.current = 'finished';
+        setSimState('finished');
+      }
+      return;
+    }
     if (hoppingRef.current) return; // 上一跳动画进行中，忽略本次点击
     const gen = runGen.current;
     if (simState === 'idle') {
@@ -936,7 +1075,7 @@ function Shell() {
   function resumeSim() {
     simStateRef.current = 'running';
     setSimState('running');
-    void runLoop();
+    void (cmdIsEngine ? runEngineLoop() : runLoop());
   }
 
   function resetSim() {
@@ -949,6 +1088,8 @@ function Shell() {
     setDetails([]);
     setVizDots([]);
     setFlashEdgeId(null);
+    engine.reset(); // 清引擎队列/等待者（ping/traceroute 真轨）
+    journeysRef.current = new Map();
   }
 
   // 改变演示参数后旧序列作废：自动复位
