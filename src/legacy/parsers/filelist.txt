@@ -1,4 +1,0 @@
-nano /etc/network/interfaces
-nano /etc/resolv.conf 
-nano /etc/dhcp/dhcpd.conf
-nano /etc/hosts

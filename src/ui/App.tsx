@@ -51,7 +51,7 @@ import '@xyflow/react/dist/style.css';
 import i18n from '@/i18n';
 
 // —— 设备类型（面板名 → 画布图标，完全取自原项目 assets）——
-type Kind = 'pc' | 'router' | 'switch' | 'dhcpserver' | 'dhcprelay' | 'dnsserver' | 'apache2' | 'annotation';
+type Kind = 'pc' | 'router' | 'switch' | 'dhcpserver' | 'dhcprelay' | 'dnsserver' | 'apache2';
 
 const boardIcon: Record<Kind, string> = {
   pc: 'pc.svg',
@@ -61,7 +61,6 @@ const boardIcon: Record<Kind, string> = {
   dhcprelay: 'dhcprelay.svg',
   dnsserver: 'dns.svg',
   apache2: 'www-server.svg',
-  annotation: 'pack.svg',
 };
 
 const kindKey: Record<Kind, string> = {
@@ -72,7 +71,6 @@ const kindKey: Record<Kind, string> = {
   dhcprelay: 'kind.dhcprelay',
   dnsserver: 'kind.dnsserver',
   apache2: 'kind.apache2',
-  annotation: 'kind.annotation',
 };
 
 /** 域 DeviceKind → 面板/画布 UI kind（图标/文案用）。 */
@@ -93,7 +91,7 @@ function uiKindOf(d: Device): Kind {
   return d.services?.apache2?.enabled ? 'apache2' : DOMAIN_KIND_UI[d.kind];
 }
 
-/** 拖放面板 kind → store DeviceKind；annotation 等画布标注不入拓扑（返回 null）。 */
+/** 拖放面板 kind → store DeviceKind（仅画布图标类入拓扑）。 */
 function storeKindOf(ui: Kind): DeviceKind | null {
   switch (ui) {
     case 'pc':
@@ -132,7 +130,7 @@ interface PanelItem {
   icon: string;
   tipKey: string;
   drag?: boolean;
-  tool?: 'traffic' | 'hide' | 'cmd' | 'animation' | 'settings';
+  tool?: 'traffic' | 'hide';
 }
 
 const panelItems: PanelItem[] = [
@@ -142,15 +140,8 @@ const panelItems: PanelItem[] = [
   { key: 'dhcpserver', icon: 'dhcpserver.svg', tipKey: 'panel.dhcpserver', drag: true },
   { key: 'dhcprelay', icon: 'dhcprelay.svg', tipKey: 'panel.dhcprelay', drag: true },
   { key: 'dnsserver', icon: 'dnsserver.svg', tipKey: 'panel.dnsserver', drag: true },
-  { key: 'isc-dhcp-server', icon: 'isc-dhcp-server.svg', tipKey: 'panel.iscDhcpServer' },
-  { key: 'isc-dhcp-client', icon: 'isc-dhcp-client.svg', tipKey: 'panel.iscDhcpClient' },
-  { key: 'isc-dhcp-relay', icon: 'isc-dhcp-relay.svg', tipKey: 'panel.iscDhcpRelay' },
-  { key: 'bind9', icon: 'bind9.svg', tipKey: 'panel.bind9' },
   { key: 'apache2', icon: 'apache2.svg', tipKey: 'panel.apache2', drag: true },
-  { key: 'annotation', icon: 'annotation.svg', tipKey: 'panel.annotation' },
   { key: 'traffic', icon: 'traffic.svg', tipKey: 'panel.traffic', tool: 'traffic' },
-  { key: 'animation', icon: 'animationControls.svg', tipKey: 'panel.animation', tool: 'animation' },
-  { key: 'settings', icon: 'settings.svg', tipKey: 'panel.settings', tool: 'settings' },
   { key: 'hide', icon: 'hide-panel.svg', tipKey: 'panel.hide', tool: 'hide' },
 ];
 
@@ -277,7 +268,7 @@ function DeviceNodeView({ data }: NodeProps<DeviceFlowNode>) {
           }}
         />
       ))}
-      {hover && kind !== 'annotation' && iconBtn(t('panel.openTerminal'), -8, () => actions.openTerminal(device.id), <CodeOutlined style={{ fontSize: 12 }} />)}
+      {hover && iconBtn(t('panel.openTerminal'), -8, () => actions.openTerminal(device.id), <CodeOutlined style={{ fontSize: 12 }} />)}
       {hover && kind === 'dhcpserver' && iconBtn(t('panel.leases'), 18, () => actions.openLeases(device.id), <TableOutlined style={{ fontSize: 12 }} />)}
       {/* 设备名牌：名称 + IP（按类型区分；绝对定位，不影响节点尺寸与连线中心） */}
       <div
@@ -1533,7 +1524,7 @@ function Shell() {
   );
 }
 
-export default function AppPrototype() {
+export default function App() {
   return (
     <ConfigProvider locale={zhCN} theme={{ token: { colorPrimary: '#1677ff', borderRadius: 6 } }}>
       <AntApp>
