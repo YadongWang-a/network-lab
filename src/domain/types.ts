@@ -104,6 +104,8 @@ export interface DhcpdConfig {
   gateway: IPv4;
   dns: IPv4;
   listenInterfaces: InterfaceId[];
+  /** 下发掩码（offer/ack 携带；dhcpd.conf `option subnet-mask` 可覆盖接口掩码）。 */
+  netmask?: IPv4;
 }
 export interface NamedConfig {
   zones: Record<string, IPv4>;
@@ -144,6 +146,8 @@ export interface Device {
   resolvedEnabled: boolean;
   filesystem: FilesystemNode;
   dhcpPool?: DhcpdConfig;
+  /** DHCP 租约（dhcpd 派生数据，仅 dhcp-server 设备持有；WF-17 引擎写入、租约窗读取）。 */
+  dhcpLeases?: DhcpLease[];
 }
 
 export interface Connection {
@@ -216,12 +220,28 @@ export interface DhcpHeader {
   xid: number;
   chaddr: MacAddress;
   yiaddr?: IPv4;
+  /** 服务端下发配置（offer/ack 携带）：子网掩码 / 默认网关 / 客户端主机名。 */
+  netmask?: IPv4;
+  gateway?: IPv4;
+  hostname?: string;
 }
 export interface DnsHeader {
   kind: 'dns';
   qr: 'query' | 'reply';
   xid: number;
   name?: string;
+  /** type-A 应答地址（reply 携带；NXDOMAIN 时缺省）。 */
+  answer?: IPv4;
+  /** 应答码（reply 携带）。 */
+  rc?: 'NOERROR' | 'NXDOMAIN';
+}
+
+/** DHCP 租约（dhcpd 派生数据，落在 dhcp-server 设备上，供租约窗读取）。 */
+export interface DhcpLease {
+  mac: MacAddress;
+  ip: IPv4;
+  hostname?: string;
+  expiresAt: number;
 }
 export interface HttpHeader {
   kind: 'http';

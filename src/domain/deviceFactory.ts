@@ -135,7 +135,12 @@ export function createDevice(kind: DeviceKind, opts: CreateDeviceOptions): Devic
       defaultPolicy: { INPUT: 'ACCEPT', OUTPUT: 'ACCEPT', FORWARD: 'ACCEPT' },
       rules: [],
     },
-    services: {},
+    // 域 kind 自带服务：dns-server 预置 named（bind9）与示例 zone（离线环境演示查询/应答，
+    // 无该域名的查询返回 NXDOMAIN；递归/公网解析不在仿真范围）。
+    services:
+      kind === 'dns-server'
+        ? { named: { enabled: true, config: { zones: { 'www.example.com': '93.184.216.34' } } } }
+        : {},
     ipv4Forwarding: kind === 'router',
     resolvedEnabled: kind !== 'switch',
     filesystem: JSON.parse(JSON.stringify(BASE_FILESYSTEM)) as FilesystemNode,
