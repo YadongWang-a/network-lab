@@ -46,11 +46,14 @@ status: open
   终点，广播行重播=逐邻居重放）。单测契约暂以 `scripts/verify-engine.ts`（Bun 直跑）承载，WF-12
   定案后归位。顺带修 M1 遗留：拖放双建设备（onDropDevice 冒泡双触发）。解锁 WF-17、WF-11。
 - **[迁移策略 = 绞杀者 strangler·连线语义 = 交换机终端]**（WF-14 已决）— 运行中 UI = 原型 mock（1316 行），legacy vanilla 108 文件零引用死代码；**UI 外壳保留**（WF-4/9 已确认），按序替换四条数据流：D1 拓扑入库 → M1（WF-15：画布 nodes/edges/拖放/编辑改走 `store.topology`，拉线强制设备接口→交换机，路由随拓扑自动重算）→ D2 仿真真引擎 → M2（WF-16：处理器最小集 switch 学习洪泛 + host ARP/ICMP + router 查表转发，播放键驱动 `SimulationEngine.step`，消费 WF-7 路由表）→ M3（WF-17：服务层 dhcpd/named/apache2 + L4 TCP/UDP + TTL/time-exceeded，9 个演示命令逐个转真，apache2 设备归并为「pc + apache2 服务」）→ M4（WF-11 终端/命令注册表 + WF-10 解析器）→ M5（WF-13 JSON 存档 + WF-12 测试 + WF-18 清理：删 legacy、剥离 mock）。每个里程碑以浏览器实测演示命令为验收门，中间版本始终可运行；M1 前先读 WF-15 接线面清单（行号已核）。
+- **[M3 服务层与 L4 = 全协议真引擎 + 服务按设备能力分发]**（WF-17 已决）— 引擎 kernel 扩展：DHCP 广播域（dhcpd 池分配/租约落 `dhcpLeases`、dhclient 未配置才绑定、跨段提示、中继未实现）、DNS UDP/53 named zone 应答 + 客户端 dnsCache、apache2 HTTP GET→200（documentRoot 简化任意 Host）、TCP 三次握手任意可达主机（FTP/telnet 协议体简化仅握手并标注）；9 个演示命令全真（假序列 buildSequence 已删，硬编码公网 IP 移除）；租约窗/抽屉服务区接 store 真数据；无服务节点中文提示。验收：`scripts/verify-engine.ts` 场景 4–8 + 浏览器实测 16/16 全绿（`ui-wf17.png`）。解锁 M4（WF-11/WF-10）与 WF-18 清理。
+- **[M4 终端 = React 组件 + 命令注册表；配置 = 解析器落 store]**（WF-11/WF-10 已决）— 终端 `src/terminal/`：注册表替代 legacy `commandFunctions`，命令分三类：FS 命令（`src/domain/filesystem.ts` 纯函数操作 Device.filesystem）、引擎驱动命令（ping/traceroute/dig/arpscan/dhclient，`driveEngine` 逐事件流式输出；顺带修复首跳去重缺陷）、配置命令（`systemctl start/restart <unit>` 读设备 FS 真实守护进程配置经解析器落 store）；UI 含 ↑/↓ 历史、设备上下文提示符、busy 输入禁用。解析器 `src/parsers/config.ts` 纯函数（network-interfaces / dhcpd.conf / bind9 zone+db / apache vhost），错误带行号中文；落点 dhcpPool（新增可选 netmask 供 offer 下发掩码）、named zones、apache2 config。验收：verify 场景 9（FS+解析器+conf 驱动引擎按新池分配）+ 浏览器实测 6/6（`ui-m4.png`）。解锁 M5（WF-13 存档 / WF-12 测试 / WF-18 清理：legacy unix/terminal/utilities/parsers 可整删）。
 
 ## Not yet specified（fog）
 
 - 优先做哪些「协议数据可视化」扩展（用户举例但未指定首批清单/优先级）。
 - 自动配置的交互形态细节（实时自动 vs 向导式确认）。
+- 状态持久化（存档/读档）**暂缓中**（用户 2026-09-07 决定先不做，WF-13 保持 open；待交互形态/旧档兼容需求明确后再排期）。
 - 性能与规模目标（单拓扑设备数 / 并发报文数上限）。
 - 终端是否保留全部原命令（apt/nano/realnode 等）还是精简。
 - 旧 `.ptt` 存档是否需要一次性导入转换器。

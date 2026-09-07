@@ -5,7 +5,27 @@
  */
 import { useStore } from '../src/state/store';
 import { SimulationEngine, type SimEvent } from '../src/engine/SimulationEngine';
-import type { ArpHeader, Device, IcmpHeader, IpHeader, Packet } from '../src/domain/types';
+import type {
+  ArpHeader,
+  Device,
+  DhcpdConfig,
+  DhcpHeader,
+  DnsHeader,
+  HttpHeader,
+  IcmpHeader,
+  IpHeader,
+  Packet,
+  TcpHeader,
+} from '../src/domain/types';
+import { ipToInt } from '../src/domain/ipam';
+import { fsLs, fsMkdir, fsRead, fsWrite } from '../src/domain/filesystem';
+import {
+  parseApacheVhost,
+  parseDbFile,
+  parseDhcpdConf,
+  parseNamedConfLocal,
+  parseNetworkInterfaces,
+} from '../src/parsers/config';
 
 const ctx = {
   getTopology: () => useStore.getState().topology,
@@ -34,6 +54,39 @@ function arpLayer(p: Packet): ArpHeader | undefined {
 function icmpLayer(p: Packet): IcmpHeader | undefined {
   const l = p.layers.find((x) => x.kind === 'icmp');
   return l?.kind === 'icmp' ? l : undefined;
+}
+function dhcpLayer(p: Packet): DhcpHeader | undefined {
+  const l = p.layers.find((x) => x.kind === 'dhcp');
+  return l?.kind === 'dhcp' ? l : undefined;
+}
+function dnsLayer(p: Packet): DnsHeader | undefined {
+  const l = p.layers.find((x) => x.kind === 'dns');
+  return l?.kind === 'dns' ? l : undefined;
+}
+function tcpLayer(p: Packet): TcpHeader | undefined {
+  const l = p.layers.find((x) => x.kind === 'tcp');
+  return l?.kind === 'tcp' ? l : undefined;
+}
+function httpLayer(p: Packet): HttpHeader | undefined {
+  const l = p.layers.find((x) => x.kind === 'http');
+  return l?.kind === 'http' ? l : undefined;
+}
+
+/** 只保留目标类型的逻辑报文（按创建顺序）。 */
+function typedPackets(events: SimEvent[], pick: (p: Packet) => boolean): Packet[] {
+  const seen = new Set<string>();
+  const out: Packet[] = [];
+  for (const e of events) {
+    if (e.type !== 'hop' || seen.has(e.packet.id)) continue;
+    seen.add(e.packet.id);
+    if (pick(e.packet)) out.push(e.packet);
+  }
+  return out;
+}
+
+/** 引擎 notice 消息列表（level 过滤可选）。 */
+function notices(events: SimEvent[], level?: 'info' | 'warn'): string[] {
+  return events.filter((e) => e.type === 'notice' && (!level || e.level === level)).map((e) => (e.type === 'notice' ? e.message : ''));
 }
 
 interface Hop {
@@ -227,7 +280,305 @@ async function testTraceroute(): Promise<void> {
   useStore.setState({ topology: { devices: {}, connections: [] } });
 }
 
+// ———————————————————— 场景 4：DHCP 四步（DORA + 租约落盘 + 客户端绑定） ————————————————————
+
+async function testDhcpDora(): Promise<void> {
+  console.log('\n== 场景 4：DHCP 四步（同交换机：PC 未配置 → 绑定池内地址）==');
+  const st = useStore.getState();
+  const sw0 = st.addDevice('switch', { position: { x: 0, y: 0 } });
+  const pc0 = st.addDevice('pc', { position: { x: 1, y: 0 } });
+  const server = st.addDevice('dhcp-server', { position: { x: 2, y: 0 } });
+  st.addConnection(pc0, 'enp0s3', sw0);
+  st.addConnection(server, 'enp0s3', sw0);
+  // 客户端未配置（dhclient 绑定语义的前提）
+  st.updateInterface(pc0, 'enp0s3', { ip: null, netmask: null, gateway: null });
+  const pool = dev(server).dhcpPool!;
+  const clientMac = dev(pc0).interfaces.enp0s3.mac;
+
+  const engine = new SimulationEngine(ctx);
+  void engine.dhcpDora(pc0, server);
+  const events = await drain(engine);
+  const dmsgs = packetSeq(events, (p) => dhcpLayer(p)?.messageType ?? '');
+  assert(dmsgs.join(',') === 'discover,offer,request,ack', 'DHCP 序列 = Discover→Offer→Request→Ack');
+  const dhs = typedPackets(events, (p) => Boolean(dhcpLayer(p)));
+  assert(new Set(dhs.map((p) => dhcpLayer(p)!.xid)).size === 1, '四步共享同一 xid');
+  assert(dhs.every((p) => dhcpLayer(p)!.chaddr === clientMac), '四步 chaddr = 客户端 MAC');
+  const yi = dhcpLayer(dhs[dhs.length - 1]!)!.yiaddr!;
+  assert(ipToInt(yi) >= ipToInt(pool.rangeStart) && ipToInt(yi) <= ipToInt(pool.rangeEnd), `yiaddr ${yi} 落在服务池内`);
+  const lease = dev(server).dhcpLeases?.find((l) => l.mac === clientMac);
+  assert(lease?.ip === yi, '服务端租约记录 = 客户端绑定地址');
+  assert(lease!.hostname === dev(pc0).label, '租约 hostname = 客户端设备名');
+  assert(lease!.expiresAt > Date.now() + pool.leaseTime * 1000 - 5000, '租约到期时间 ≈ now + leaseTime');
+  assert(dev(pc0).interfaces.enp0s3.ip === yi, '客户端接口绑定 yiaddr');
+  assert(dev(pc0).interfaces.enp0s3.gateway === pool.gateway, '客户端网关 = DHCP 下发网关');
+  assert(notices(events, 'info').some((m) => m.includes('绑定成功')), '绑定成功 notice（中文）');
+  assert(engine.isIdle(), 'DORA 播完引擎收敛');
+
+  // 续租：客户端已有 IP → 保持静态，服务器复用原租约地址
+  void engine.dhcpDora(pc0, server);
+  const events2 = await drain(engine);
+  const ack2 = packetSeq(events2, (p) => dhcpLayer(p)?.messageType === 'ack' ? dhcpLayer(p)!.yiaddr ?? '' : '');
+  assert(ack2.includes(yi), '续租 ack 仍提供原地址（租约复用）');
+  assert(notices(events2, 'info').some((m) => m.includes('静态')), '已有静态 IP → 保持原配置 notice');
+  assert((dev(server).dhcpLeases ?? []).filter((l) => l.mac === clientMac).length === 1, '租约不重复');
+
+  // 跨广播域：服务器在另一交换机 → 明确中文提示，不发报文
+  const sw1 = st.addDevice('switch', { position: { x: 3, y: 0 } });
+  const server2 = st.addDevice('dhcp-server', { position: { x: 4, y: 0 } });
+  st.addConnection(server2, 'enp0s3', sw1);
+  void engine.dhcpDora(pc0, server2);
+  const events3 = await drain(engine);
+  assert(notices(events3, 'warn').some((m) => m.includes('不在同一广播域')), '跨网段 DHCP → 中文提示（中继未实现）');
+  assert(packetSeq(events3, (p) => dhcpLayer(p)?.messageType ?? '').length === 0, '跨网段不发 DHCP 报文');
+
+  useStore.setState({ topology: { devices: {}, connections: [] } });
+}
+
+// ———————————————————— 场景 5：DNS（zone 命中 / NXDOMAIN + 客户端缓存） ————————————————————
+
+async function testDnsQuery(): Promise<void> {
+  console.log('\n== 场景 5：DNS 查询（named zone 命中 → 应答 + 缓存；未知域名 → NXDOMAIN）==');
+  const st = useStore.getState();
+  const sw0 = st.addDevice('switch', { position: { x: 0, y: 0 } });
+  const pc0 = st.addDevice('pc', { position: { x: 1, y: 0 } });
+  const dnsSrv = st.addDevice('dns-server', { position: { x: 2, y: 0 } });
+  st.addConnection(pc0, 'enp0s3', sw0);
+  st.addConnection(dnsSrv, 'enp0s3', sw0);
+
+  const engine = new SimulationEngine(ctx);
+  void engine.dnsQuery(pc0, dnsSrv, 'www.example.com');
+  const events = await drain(engine);
+  const dnsPkts = typedPackets(events, (p) => Boolean(dnsLayer(p)));
+  assert(dnsPkts.length === 2, 'DNS 逻辑报文 = 查询 + 应答');
+  const q = dnsLayer(dnsPkts[0]!);
+  const r = dnsLayer(dnsPkts[1]!);
+  assert(q?.qr === 'query' && q.name === 'www.example.com', '查询携带域名');
+  assert(r?.qr === 'reply' && r.rc === 'NOERROR' && r.answer === '93.184.216.34', 'zone 命中应答 A 记录');
+  assert(dev(pc0).dnsCache.some((c) => c.name === 'www.example.com' && c.ip === '93.184.216.34'), '客户端 DNS 缓存写入（resolved）');
+
+  void engine.dnsQuery(pc0, dnsSrv, 'no.such.host');
+  const events2 = await drain(engine);
+  const r2 = typedPackets(events2, (p) => dnsLayer(p)?.qr === 'reply')[0];
+  assert(dnsLayer(r2!)?.rc === 'NXDOMAIN' && !dnsLayer(r2!)?.answer, '未知域名 → NXDOMAIN 应答');
+  assert(!dev(pc0).dnsCache.some((c) => c.name === 'no.such.host'), 'NXDOMAIN 不写缓存');
+  assert(engine.isIdle(), 'DNS 播完收敛');
+
+  // 目标未运行 named → 明确中文提示
+  void engine.dnsQuery(pc0, pc0, 'www.example.com');
+  const events3 = await drain(engine);
+  assert(notices(events3, 'warn').some((m) => m.includes('未运行') && m.includes('DNS 服务')), '无 named → 中文提示');
+
+  useStore.setState({ topology: { devices: {}, connections: [] } });
+}
+
+// ———————————————————— 场景 6：HTTP（TCP 握手 + apache2 200） ————————————————————
+
+async function testHttpBrowse(): Promise<void> {
+  console.log('\n== 场景 6：浏览网页（TCP 三次握手 → GET → apache2 200）==');
+  const st = useStore.getState();
+  const sw0 = st.addDevice('switch', { position: { x: 0, y: 0 } });
+  const pc0 = st.addDevice('pc', { position: { x: 1, y: 0 } });
+  const web = st.addDevice('pc', { position: { x: 2, y: 0 } });
+  st.addConnection(pc0, 'enp0s3', sw0);
+  st.addConnection(web, 'enp0s3', sw0);
+  // apache2 归并（同拖放 Web 服务器语义：pc kind + apache2 服务）
+  st.updateDevice(web, { services: { ...dev(web).services, apache2: { enabled: true, config: { documentRoot: '/var/www/html', vhosts: [] } } } });
+
+  const engine = new SimulationEngine(ctx);
+  void engine.httpGet(pc0, web, 'www.example.com');
+  const events = await drain(engine);
+  const tcpSeq = packetSeq(events, (p) => {
+    const t = tcpLayer(p);
+    if (!t) return '';
+    return t.syn && !t.ackFlag ? 'S' : t.syn && t.ackFlag ? 'SA' : 'A';
+  });
+  assert(tcpSeq.join(',') === 'S,SA,A,A,A', 'TCP 段序列 = SYN,SYN-ACK,ACK,ACK(GET),ACK(200)');
+  const httpSeq = packetSeq(events, (p) => {
+    const h = httpLayer(p);
+    if (!h) return '';
+    return h.method ? 'GET' : h.status !== undefined ? String(h.status) : '';
+  });
+  assert(httpSeq.join(',') === 'GET,200', 'HTTP 序列 = GET 请求 → 200 响应');
+  const ts = typedPackets(events, (p) => Boolean(tcpLayer(p)));
+  const syn = tcpLayer(ts[0]!);
+  const synack = tcpLayer(ts[1]!);
+  const get = ts.find((p) => httpLayer(p)?.method === 'GET')!;
+  const ok = ts.find((p) => httpLayer(p)?.status === 200)!;
+  assert(synack!.ack === syn!.seq + 1, 'SYN-ACK 确认号 = SYN 序号+1');
+  assert(tcpLayer(get)!.ack === synack!.seq + 1, 'GET 确认号 = SYN-ACK 序号+1');
+  assert(tcpLayer(ok)!.ack === tcpLayer(get)!.seq + 1, '200 确认号 = GET 序号+1');
+  assert(httpLayer(ok)!.status === 200, 'apache2 响应 200');
+  assert(engine.isIdle(), 'HTTP 播完收敛');
+
+  // 目标无 apache2 → 明确中文提示（不再硬编码公网目标）
+  void engine.httpGet(pc0, pc0, 'www.example.com');
+  const events2 = await drain(engine);
+  assert(notices(events2, 'warn').some((m) => m.includes('未运行') && m.includes('Web 服务')), '目标未运行 apache2 → 中文提示');
+
+  useStore.setState({ topology: { devices: {}, connections: [] } });
+}
+
+// ———————————————————— 场景 7：TCP 连接（telnet/ftp 语义）+ ARP 扫描 ————————————————————
+
+async function testTcpAndScan(): Promise<void> {
+  console.log('\n== 场景 7：TCP 三次握手（任意可达主机）+ ARP 扫描 ==');
+  const st = useStore.getState();
+  const sw0 = st.addDevice('switch', { position: { x: 0, y: 0 } });
+  const pc0 = st.addDevice('pc', { position: { x: 1, y: 0 } });
+  const pc1 = st.addDevice('pc', { position: { x: 2, y: 0 } });
+  st.addConnection(pc0, 'enp0s3', sw0);
+  st.addConnection(pc1, 'enp0s3', sw0);
+
+  // TCP：telnet 端口语义（目标为任意可达主机，协议体简化仅握手 —— WF-17 标注范围）
+  const engine = new SimulationEngine(ctx);
+  void engine.tcpConnect(pc0, pc1, 23);
+  const events = await drain(engine);
+  const tcpSeq = packetSeq(events, (p) => {
+    const t = tcpLayer(p);
+    if (!t) return '';
+    return t.syn && !t.ackFlag ? 'S' : t.syn && t.ackFlag ? 'SA' : 'A';
+  });
+  assert(tcpSeq.join(',') === 'S,SA,A', 'telnet/ftp = 三次握手（S,SA,A）');
+  const ts = typedPackets(events, (p) => Boolean(tcpLayer(p)));
+  assert(tcpLayer(ts[0]!)!.dstPort === 23 && tcpLayer(ts[1]!)!.srcPort === 23, '握手端口 = 23（telnet）');
+  assert(engine.isIdle(), 'TCP 握手收敛');
+
+  // ARP 扫描：同广播域主机逐条请求 → 应答 + 汇总提示
+  void engine.arpScan(pc0);
+  const events2 = await drain(engine);
+  assert(notices(events2, 'info').some((m) => m.includes('1 台主机在线')), 'ARP 扫描汇总 notice（在线 1 台）');
+  assert(dev(pc0).arpTable.some((a) => a.ip === ipOf(pc1)), '扫描学习到目标 MAC');
+  assert(engine.isIdle(), 'ARP 扫描收敛');
+
+  useStore.setState({ topology: { devices: {}, connections: [] } });
+}
+
+// ———————————————————— 场景 8：无服务节点提示（DHCP 目标无服务） ————————————————————
+
+async function testNoService(): Promise<void> {
+  console.log('\n== 场景 8：目标无服务 → 明确中文提示（替代静默跳过）==');
+  const st = useStore.getState();
+  const sw0 = st.addDevice('switch', { position: { x: 0, y: 0 } });
+  const pc0 = st.addDevice('pc', { position: { x: 1, y: 0 } });
+  const pc1 = st.addDevice('pc', { position: { x: 2, y: 0 } });
+  st.addConnection(pc0, 'enp0s3', sw0);
+  st.addConnection(pc1, 'enp0s3', sw0);
+
+  const engine = new SimulationEngine(ctx);
+  void engine.dhcpDora(pc0, pc1); // pc1 无 dhcpPool
+  const events = await drain(engine);
+  assert(notices(events, 'warn').some((m) => m.includes('未运行') && m.includes('DHCP 服务')), '目标无 DHCP 服务 → 中文提示');
+  assert(packetSeq(events, (p) => dhcpLayer(p)?.messageType ?? '').length === 0, '无服务不发 DHCP 报文');
+
+  const pc2 = st.addDevice('pc', { position: { x: 3, y: 0 } }); // 未接线（无交换机可广播）
+  void engine.dhcpDora(pc2, pc1);
+  const events2 = await drain(engine);
+  assert(notices(events2, 'warn').some((m) => m.includes('未接入交换机')), '源未接入交换机 → 中文提示');
+  useStore.setState({ topology: { devices: {}, connections: [] } });
+}
+
+// ———————————————————— 场景 9：虚拟文件系统 + 配置解析器 + 配置驱动引擎 ————————————————————
+
+async function testFsAndParsers(): Promise<void> {
+  console.log('\n== 场景 9：终端 FS 原语 + WF-10 解析器 + dhcpd.conf 驱动引擎 ==');
+  const st = useStore.getState();
+  const sw0 = st.addDevice('switch', { position: { x: 0, y: 0 } });
+  const pc0 = st.addDevice('pc', { position: { x: 1, y: 0 } });
+  const server = st.addDevice('dhcp-server', { position: { x: 2, y: 0 } });
+  st.addConnection(pc0, 'enp0s3', sw0);
+  st.addConnection(server, 'enp0s3', sw0);
+  st.updateInterface(pc0, 'enp0s3', { ip: null, netmask: null, gateway: null });
+
+  // —— FS 原语（WF-11 终端底层）——
+  const fs = dev(pc0).filesystem;
+  const mkdir1 = fsMkdir(fs, '/var/log', []);
+  const mkdir2 = fsMkdir(mkdir1, '/var/log/app', []);
+  const mkdir3 = fsMkdir(mkdir2, '/root', []);
+  const written = fsWrite(mkdir3, '/etc/hosts.bak', '127.0.0.1 localhost\n', []);
+  st.updateDevice(pc0, { filesystem: written });
+  const hosts = fsRead(dev(pc0).filesystem, '/etc/hosts.bak', []);
+  assert(hosts.includes('127.0.0.1'), 'FS 写读一致（echo/cat 同源原语）');
+  const lsLog = fsLs(dev(pc0).filesystem, '/var/log', []);
+  assert(lsLog.includes('app/'), 'mkdir 建目录并可 ls');
+  let threw = false;
+  try {
+    fsRead(dev(pc0).filesystem, '/no/such/file', []);
+  } catch (e) {
+    threw = (e as Error).message.includes('不存在');
+  }
+  assert(threw, 'FS 中文错误（不存在）');
+
+  // —— 解析器（WF-10）：语法/落盘对象 ——
+  const netCfg = parseNetworkInterfaces(
+    '# comment\niface enp0s3 inet static address 10.0.0.5 netmask 255.255.255.0 gateway 10.0.0.1\niface enp0s3 inet dhcp',
+    ['enp0s3'],
+  );
+  assert(netCfg.length === 2 && netCfg[0]!.mode === 'static' && netCfg[0]!.address === '10.0.0.5', 'network-interfaces 解析 static/dhcp 块');
+  let netErr = '';
+  try {
+    parseNetworkInterfaces('iface enp0s3 inet static address 999.1.1.1 netmask 255.255.255.0', ['enp0s3']);
+  } catch (e) {
+    netErr = (e as Error).message;
+  }
+  assert(netErr.includes('第 1 行') && netErr.includes('999'), 'network-interfaces 非法 IP → 行号中文报错');
+
+  const dhcpConf = parseDhcpdConf([
+    'subnet 192.168.1.0 netmask 255.255.255.0 {',
+    '  range 192.168.1.150 192.168.1.160;',
+    '  option routers 192.168.1.1;',
+    '  option subnet-mask 255.255.255.0;',
+    '  option domain-name-servers 192.168.1.9;',
+    '  default-lease-time 7200;',
+    '}',
+  ].join('\n'));
+  assert(
+    dhcpConf.rangeStart === '192.168.1.150' && dhcpConf.rangeEnd === '192.168.1.160' && dhcpConf.gateway === '192.168.1.1' && dhcpConf.dns === '192.168.1.9' && dhcpConf.leaseTime === 7200,
+    'dhcpd.conf 解析 range/routers/subnet-mask/dns/lease',
+  );
+
+  const zoneEntries = parseNamedConfLocal('zone "lab.local" {\n  type master;\n  file "/etc/bind/db.lab";\n};\n');
+  assert(zoneEntries.length === 1 && zoneEntries[0]!.db === '/etc/bind/db.lab', 'named.conf.local 解析 zone→db');
+  const db = parseDbFile('www IN A 10.0.0.7\n@ IN A 10.0.0.1\n', 'lab.local');
+  assert(db['www.lab.local'] === '10.0.0.7' && db['lab.local'] === '10.0.0.1', 'db 文件解析 A 记录（@ → apex）');
+
+  const apacheConf = parseApacheVhost('<VirtualHost *:80>\n  ServerName www.lab.local\n  DocumentRoot /srv/www\n</VirtualHost>\n');
+  assert(apacheConf.vhosts[0] === 'www.lab.local' && apacheConf.documentRoot === '/srv/www', 'apache vhost 解析 ServerName/DocumentRoot');
+
+  // —— 解析结果落 store → 引擎按新池分配（WF-10 → 引擎闭环）——
+  const poolCfg = parseDhcpdConf([
+    'subnet 192.168.1.0 netmask 255.255.255.0 { range 192.168.1.150 192.168.1.160; default-lease-time 7200; }',
+  ].join('\n'));
+  const cur = dev(server);
+  const pool: DhcpdConfig = {
+    rangeStart: poolCfg.rangeStart,
+    rangeEnd: poolCfg.rangeEnd,
+    leaseTime: poolCfg.leaseTime ?? 3600,
+    gateway: poolCfg.gateway ?? '192.168.1.1',
+    dns: poolCfg.dns ?? '192.168.1.1',
+    netmask: poolCfg.netmask ?? '255.255.255.0',
+    listenInterfaces: cur.dhcpPool?.listenInterfaces ?? ['enp0s3'],
+  };
+  st.updateDevice(server, { dhcpPool: pool, services: { ...cur.services, dhcpd: { enabled: true, config: pool } } });
+
+  const engine = new SimulationEngine(ctx);
+  void engine.dhcpDora(pc0, server);
+  const events = await drain(engine);
+  const ackPkts = typedPackets(events, (p) => dhcpLayer(p)?.messageType === 'ack');
+  assert(ackPkts.length === 1, '配置驱动 DORA 完成（ack 到达）');
+  assert(dhcpLayer(ackPkts[0]!)!.yiaddr === '192.168.1.150', `yiaddr 落在解析配置的池内（150）`);
+  assert(dev(server).dhcpLeases?.[0]?.expiresAt! > Date.now() + 7000 * 1000, '租约按 conf default-lease-time 7200s 落盘');
+  assert(engine.isIdle(), '配置驱动 DORA 收敛');
+
+  useStore.setState({ topology: { devices: {}, connections: [] } });
+}
+
 await testSameSubnet();
 await testCrossSubnet();
 await testTraceroute();
+await testDhcpDora();
+await testDnsQuery();
+await testHttpBrowse();
+await testTcpAndScan();
+await testNoService();
+await testFsAndParsers();
 console.log('\n全部断言通过 ✓');
