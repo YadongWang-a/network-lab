@@ -4,7 +4,7 @@ import { defineConfig } from "eslint/config";
 
 export default defineConfig([
   {
-    ignores: ["tests/**"],
+    ignores: ["dist/**", "graphify-out/**", "node_modules/**", "tests/**"],
   },
   {
     files: ["**/*.{js,mjs,cjs}"],
