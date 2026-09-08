@@ -1,0 +1,770 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>数据包可视化演示 · 完整版</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Roboto','PingFang SC','Segoe UI','Microsoft YaHei',Arial,sans-serif;
+    background: linear-gradient(180deg,#EDF1F8,#F7F8FB);
+    color: #1A1B1C;
+    padding: 20px;
+  }
+  .wrap { max-width: 920px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+  .card {
+    background: #FFFFFF;
+    border: 1px solid #E4E6EB;
+    border-radius: 16px;
+    box-shadow: 0 1px 3px rgba(16,32,64,.06), 0 8px 24px rgba(16,32,64,.05);
+    overflow: hidden;
+  }
+  /* 顶部 */
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    flex-wrap: wrap; gap: 10px;
+    padding: 14px 18px;
+    background: linear-gradient(135deg,#E8F0FE,#E0F3F6);
+    border-bottom: 1px solid #D8E3F3;
+  }
+  header h1 { font-size: 17px; font-weight: 700; color: #1A3A6B; }
+  header .sub { font-size: 12px; color: #6B7280; margin-top: 3px; }
+  .tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+  .tab {
+    padding: 7px 14px; border-radius: 10px; border: 1px solid #B9CDF0;
+    background: #fff; color: #2F5FB0; font-size: 13px; font-weight: 600;
+    cursor: pointer; transition: all .15s;
+  }
+  .tab:hover { background: #E8F0FE; }
+  .tab.active { background: #2F5FB0; color: #fff; border-color: #2F5FB0; }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: flex; flex-direction: column; gap: 16px; }
+  /* 场景 */
+  .scene-top { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; padding: 10px 14px; border-bottom: 1px solid #E4E6EB; }
+  .scene-title { font-size: 13px; font-weight: 700; color: #1A3A6B; }
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; }
+  .controls button {
+    background: #FFFFFF; color: #2F5FB0; border: 1px solid #B9CDF0;
+    border-radius: 9px; padding: 6px 14px; font-size: 13px; font-weight: 600;
+    cursor: pointer; transition: all .15s;
+  }
+  .controls button:hover { background: #2F5FB0; color: #fff; border-color: #2F5FB0; }
+  .scene { position: relative; height: 235px; }
+  .scene-bg {
+    position: absolute; inset: 0;
+    background:
+      linear-gradient(rgba(61,111,214,.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(61,111,214,.05) 1px, transparent 1px);
+    background-size: 28px 28px;
+  }
+  .endpoint { position: absolute; top: 50%; transform: translateY(-50%); width: 112px; text-align: center; z-index: 2; }
+  .endpoint .icon {
+    width: 58px; height: 58px; margin: 0 auto; border-radius: 16px;
+    background: #fff; border: 1px solid #C9D6EF; box-shadow: 0 4px 12px rgba(47,95,176,.12);
+    display: flex; align-items: center; justify-content: center; font-size: 26px;
+  }
+  .endpoint .name { font-size: 13px; font-weight: 700; margin-top: 8px; color: #1A3A6B; }
+  .endpoint .ip { font-size: 11px; color: #8A94A6; margin-top: 2px; }
+  .ep-left { left: 16px; }
+  .ep-right { right: 16px; }
+  .ep-c  { left: 11%; }
+  .ep-sw  { left: 37%; }
+  .ep-rtr { left: 63%; }
+  .ep-s  { left: 87%; }
+  .endpoint .icon { transition: box-shadow .2s, transform .2s; }
+  .endpoint.hot .icon { box-shadow: 0 0 0 4px rgba(47,95,176,.28), 0 6px 16px rgba(47,95,176,.25); transform: scale(1.08); }
+  .bubble {
+    position: absolute; top: 6px; left: 50%; transform: translateX(-50%);
+    background: #fff; border: 1px solid #B9CDF0; border-radius: 12px;
+    padding: 6px 12px; font-size: 12px; color: #1A3A6B; font-weight: 600;
+    box-shadow: 0 4px 14px rgba(16,32,64,.14); white-space: nowrap;
+    opacity: 0; transition: opacity .2s; z-index: 4; max-width: 94%;
+  }
+  .bubble.on { opacity: 1; }
+  .devrow { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .devrow .lab { font-size: 12px; color: #8A94A6; font-weight: 600; }
+  .devchip {
+    padding: 6px 13px; border-radius: 14px; font-size: 12.5px; font-weight: 600;
+    cursor: pointer; background: #fff; border: 1px solid #D8DEE9; color: #3A4356;
+    transition: all .15s; user-select: none;
+  }
+  .devchip:hover { box-shadow: 0 3px 8px rgba(16,32,64,.12); }
+  .devchip.on { background: #E8F0FE; border-color: #2F5FB0; color: #1A3A6B; }
+  .dual { display: flex; gap: 16px; flex-wrap: wrap; }
+  .dual > .card { flex: 1 1 400px; min-width: 0; }
+  .card.hl { outline: 2px solid #F0B35A; outline-offset: -1px; }
+  .link {
+    position: absolute; left: 10%; right: 10%; top: 50%; height: 4px;
+    transform: translateY(-50%); border-radius: 2px;
+    background: linear-gradient(90deg,#BBD3F5,#9FD8E0,#BBD3F5);
+    box-shadow: inset 0 0 0 1px rgba(61,111,214,.12);
+  }
+  .pkt {
+    position: absolute; top: 50%; transform: translate(-50%,-50%);
+    padding: 7px 14px; border-radius: 22px; font-size: 13px; font-weight: 700;
+    color: #0B1220; border: 1px solid rgba(255,255,255,.9);
+    box-shadow: 0 4px 14px rgba(16,32,64,.20);
+    white-space: nowrap; opacity: 0; z-index: 3;
+    transition: left .6s linear, opacity .25s ease;
+  }
+  .note {
+    position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%);
+    font-size: 12px; color: #6B7280; background: #fff; border: 1px solid #E4E6EB;
+    padding: 4px 12px; border-radius: 14px; box-shadow: 0 2px 6px rgba(16,32,64,.05);
+    white-space: nowrap; z-index: 2;
+  }
+  /* 包列表 */
+  .list { padding: 12px 16px 10px; }
+  .list-title { font-size: 13px; font-weight: 700; color: #1A3A6B; margin-bottom: 10px; }
+  .list-row { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip {
+    padding: 6px 13px; border-radius: 14px; font-size: 12.5px; font-weight: 600;
+    cursor: pointer; background: #F7F9FC; border: 1px solid #D8DEE9; color: #3A4356;
+    transition: all .15s; user-select: none;
+  }
+  .chip:hover { transform: translateY(-1px); box-shadow: 0 3px 8px rgba(16,32,64,.12); }
+  .chip.on { background: #E8F0FE; border-color: #2F5FB0; color: #1A3A6B; }
+  .info-bar { font-size: 12.5px; color: #3A4356; min-height: 20px; margin-top: 10px; }
+  /* 包解剖 */
+  .detail { padding: 16px; }
+  .detail-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+  .detail-head .t { font-size: 14px; font-weight: 700; color: #1A3A6B; }
+  .detail-head .sub { font-size: 12px; color: #8A94A6; }
+  .detail-pkts { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+  .layers { display: flex; border-radius: 12px; overflow: hidden; border: 1px solid #D8DEE9; box-shadow: 0 2px 6px rgba(16,32,64,.06); }
+  .layer { text-align: center; padding: 14px 4px; font-size: 12px; font-weight: 700; cursor: pointer; opacity: .55; transition: all .15s; }
+  .layer.on { opacity: 1; outline: 2px solid #1A3A6B; outline-offset: 1px; }
+  .layer .lb { display: block; }
+  .layer .sz { display: block; font-size: 10px; font-weight: 400; margin-top: 2px; }
+  .l-eth { background: #EDE7FB; color: #5B4DB8; border-right: 1px solid #fff; }
+  .l-ip  { background: #E0F7FA; color: #007C8C; border-right: 1px solid #fff; }
+  .l-tcp { background: #FFF4E0; color: #B45309; border-right: 1px solid #fff; }
+  .l-http{ background: #E8F5E9; color: #1B7A4A; }
+  .fields { border: 1px solid #E4E6EB; border-radius: 12px; overflow: hidden; margin-top: 12px; }
+  .fields .fr { display: flex; font-size: 11px; color: #8A94A6; background: #F7F9FC; padding: 8px 12px; border-bottom: 1px solid #E4E6EB; font-weight: 600; }
+  .fields .fd { display: flex; font-size: 12.5px; padding: 8px 12px; border-bottom: 1px solid #F0F2F6; }
+  .fields .fd:last-child { border-bottom: none; }
+  .fd .k { flex: 2; color: #1A1B1C; font-weight: 600; }
+  .fd .v { flex: 2; color: #0E8F7E; font-family: ui-monospace,Menlo,Consolas,monospace; }
+  .fd .d { flex: 3; color: #6B7280; }
+  .hex-label { font-size: 11px; color: #8A94A6; margin-top: 12px; }
+  .hex {
+    font-family: ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    font-size: 11.5px; line-height: 1.75; background: #FAFBFD; border: 1px solid #E4E6EB;
+    border-radius: 12px; padding: 10px 14px; color: #3A4356; white-space: pre; margin-top: 6px;
+  }
+  .hex .hx-off { color: #B9C2D0; }
+  .hex .hx { border-radius: 3px; padding: 0 1px; cursor: default; transition: all .12s; }
+  .hex .hx.on { font-weight: 700; box-shadow: inset 0 0 0 1.5px #1A3A6B; }
+  .hex .l-eth, .hex .l-ip, .hex .l-tcp, .hex .l-http { border-right: none; }
+  .hex .hx-asc { color: #8A94A6; }
+  .hex-note { font-size: 11px; color: #8A94A6; margin-top: 6px; }
+  /* 跨设备变化 */
+  .hop { padding: 16px; }
+  .hop-head .t { font-size: 14px; font-weight: 700; color: #1A3A6B; }
+  .hop-head .sub { font-size: 12px; color: #8A94A6; margin-top: 4px; }
+  .hop-path { display: flex; align-items: stretch; gap: 4px; margin: 14px 0; }
+  .hop-node { flex: 1 1 0; min-width: 0; text-align: center; padding: 10px 4px; border-radius: 12px; cursor: pointer; background: #fff; border: 1px solid #E4E6EB; transition: all .15s; }
+  .hop-node:hover { border-color: #B9CDF0; }
+  .hop-node.active { background: #E8F0FE; border-color: #2F5FB0; }
+  .hop-node.end { cursor: default; }
+  .hop-node .ni { font-size: 22px; }
+  .hop-node .nn { font-size: 12.5px; font-weight: 700; color: #3A4356; margin-top: 4px; }
+  .hop-node .nt { font-size: 10px; color: #8A94A6; margin-top: 2px; }
+  .hop-node.active .nn { color: #1A3A6B; }
+  .hop-arrow { align-self: center; color: #B9C5D8; font-size: 14px; }
+  .hop-dev { background: #F7F9FC; border: 1px solid #E4E6EB; border-radius: 12px; padding: 12px 14px; }
+  .hop-dev .hd { font-size: 14px; font-weight: 700; color: #1A1B1C; }
+  .hop-dev .hl { font-size: 11px; color: #6B7280; font-weight: 400; margin-left: 6px; }
+  .hop-dev .ha { font-size: 12.5px; color: #3A4356; margin-top: 5px; line-height: 1.5; }
+  .hop-table { border: 1px solid #E4E6EB; border-radius: 12px; overflow: hidden; margin-top: 12px; }
+  .hop-table .th { display: flex; font-size: 11px; color: #8A94A6; background: #F7F9FC; padding: 8px 12px; border-bottom: 1px solid #E4E6EB; font-weight: 600; }
+  .hop-table .tr { display: flex; font-size: 12px; padding: 8px 12px; border-bottom: 1px solid #F0F2F6; align-items: center; }
+  .hop-table .tr:last-of-type { border-bottom: none; }
+  .tr .ck { flex: 1.2; color: #1A1B1C; font-weight: 600; }
+  .tr .cv { flex: 1.6; color: #3A4356; font-family: monospace; padding-right: 8px; }
+  .tr .cv.ch { color: #C2410C; }
+  .tr .cs { flex: 0.6; }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 700; }
+  .tag.ch { background: #FDF2EA; border: 1px solid #F5C6AA; color: #C2410C; }
+  .tag.no { background: #F3F9F5; border: 1px solid #BFE0CC; color: #1B7A4A; }
+  .tr-note { font-size: 11px; color: #8A94A6; padding: 0 12px 8px; margin-top: -4px; }
+  .hop-tip { padding: 10px 12px; font-size: 12px; color: #6B7280; background: #FAFBFD; line-height: 1.6; border-top: 1px solid #F0F2F6; }
+  .hop-legend { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 10px; font-size: 11px; color: #6B7280; }
+  .hop-legend .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: -1px; }
+  .sw.ch { background: #FDF2EA; border: 1px solid #E8590C; }
+  .sw.no { background: #F3F9F5; border: 1px solid #1B7A4A; }
+  footer { text-align: center; font-size: 11px; color: #A6ADBA; padding: 4px 0 8px; }
+  @media (max-width: 560px) {
+    body { padding: 12px; }
+    .fields .fr, .fields .fd { flex-direction: column; gap: 2px; }
+    .endpoint { width: 92px; }
+    .endpoint .icon { width: 50px; height: 50px; font-size: 22px; }
+    .link { left: 108px; right: 108px; }
+    .note { white-space: normal; width: 78%; text-align: center; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="card">
+    <div>
+      <h1>数据包可视化演示</h1>
+      <div class="sub">TCP 会话：三次握手 + HTTP 请求响应 · 传输动画中展示交换机 / 路由器对数据包的处理</div>
+    </div>
+  </header>
+
+  <!-- 传输动画：链路上带交换机、路由器，动画经过时展示设备处理 -->
+  <div class="card stage">
+    <div class="scene-top">
+      <span class="scene-title">数据包传输动画（经过交换机 / 路由器）</span>
+      <div class="controls">
+        <button id="btnPlay" onclick="Demo.play()">▶ 播放</button>
+        <button onclick="Demo.step()">⏭ 步进</button>
+        <button onclick="Demo.reset()">↺ 重置</button>
+      </div>
+    </div>
+    <div class="scene">
+      <div class="scene-bg"></div>
+      <div class="endpoint ep-c" data-dev="c">
+        <div class="icon">🖥️</div>
+        <div class="name">客户端</div>
+        <div class="ip">192.168.1.10</div>
+      </div>
+      <div class="endpoint ep-sw" data-dev="sw">
+        <div class="icon">🔀</div>
+        <div class="name">交换机</div>
+        <div class="ip">二层 · 数据链路层</div>
+      </div>
+      <div class="endpoint ep-rtr" data-dev="rtr">
+        <div class="icon">🌐</div>
+        <div class="name">路由器</div>
+        <div class="ip">三层 · 网络层</div>
+      </div>
+      <div class="endpoint ep-s" data-dev="s">
+        <div class="icon">🖧</div>
+        <div class="name">服务器</div>
+        <div class="ip">93.184.216.34</div>
+      </div>
+      <div class="link"></div>
+      <div class="pkt" id="pktEl"></div>
+      <div class="bubble" id="bubbleEl"></div>
+      <div class="note" id="sceneNote">点击 ▶ 播放，看数据包经过交换机、路由器时发生了什么</div>
+    </div>
+    <div class="list">
+      <div class="list-title">已捕获的数据包（点击查看解剖）</div>
+      <div class="list-row" id="pktList"></div>
+      <div class="info-bar" id="infoBar">还没有数据包，点击播放开始。</div>
+    </div>
+  </div>
+
+  <!-- 包解剖 + 跨设备变化 并列 -->
+  <div class="dual">
+    <div class="card detail">
+      <div class="detail-head">
+        <div class="t" id="dtlTitle">数据包解剖</div>
+        <div class="sub">点击协议层查看字段；点下方包切换示例</div>
+      </div>
+      <div class="detail-pkts" id="dtlPkts"></div>
+      <div class="layers" id="layersEl"></div>
+      <div class="fields" id="fields"></div>
+      <div class="hex-label" id="hexLabel"></div>
+      <div class="hex" id="hexBox"></div>
+    </div>
+    <div class="card hop">
+      <div class="hop-head">
+        <div class="t">数据包穿越交换机 / 路由器：什么变了？什么没变？</div>
+        <div class="sub">点击设备节点，或让动画经过设备，查看"进入前 → 离开后"各层字段变化</div>
+      </div>
+      <div class="hop-path" id="hopPath"></div>
+      <div class="hop-dev" id="hopDev"></div>
+      <div class="hop-table" id="hopTable"></div>
+      <div class="hop-legend">
+        <span><span class="sw ch"></span> 变了（该设备改写）</span>
+        <span><span class="sw no"></span> 没变（端到端传递）</span>
+      </div>
+      <div style="margin-top:10px;font-size:11px;color:#A6ADBA;">示意数据：字段值为教学示例，非真实抓包；NAT / 分片等特殊处理未列入本演示。</div>
+    </div>
+  </div>
+
+  <footer>配色：方向（蓝=客户端→服务器 / 橙=服务器→客户端）· 协议层（紫=以太网 / 青=IP / 金黄=TCP / 绿=HTTP）</footer>
+</div>
+
+<script>
+(function(){
+  /* ================= 公共数据 ================= */
+  var PKTS = [
+    { d:1,  name:'SYN',         c:'#2F6FED', tag:'seq=0',           layers:['eth','ip','tcp'],       tcp:'syn',    http:null, hex:'syn',    focus:'tcp'  },
+    { d:-1, name:'SYN+ACK',     c:'#E8590C', tag:'seq=0 · ack=1',   layers:['eth','ip','tcp'],       tcp:'synack', http:null, hex:'synack', focus:'tcp'  },
+    { d:1,  name:'ACK',         c:'#2F6FED', tag:'seq=1 · ack=1',   layers:['eth','ip','tcp'],       tcp:'ack',    http:null, hex:'ack',    focus:'tcp'  },
+    { d:1,  name:'HTTP GET /',  c:'#2FA78A', tag:'请求 index.html', layers:['eth','ip','tcp','http'], tcp:'req',    http:'req', hex:'req',    focus:'http' },
+    { d:-1, name:'HTTP 200 OK', c:'#E8590C', tag:'响应 + 数据',      layers:['eth','ip','tcp','http'], tcp:'res',    http:'res', hex:'res',    focus:'http' }
+  ];
+
+  /* ================= 传输动画（4 节点：客户端→交换机→路由器→服务器） ================= */
+  var pktEl = document.getElementById('pktEl');
+  var listEl = document.getElementById('pktList');
+  var infoBar = document.getElementById('infoBar');
+  var btnPlay = document.getElementById('btnPlay');
+  var note = document.getElementById('sceneNote');
+  var bubble = document.getElementById('bubbleEl');
+  var NODES = [
+    { k:'c',   left: 11 },
+    { k:'sw',  left: 37 },
+    { k:'rtr', left: 63 },
+    { k:'s',   left: 87 }
+  ];
+  var NODE_NAME = { c:'客户端', sw:'交换机', rtr:'路由器', s:'服务器' };
+  var DEV_TIP = {
+    sw:  { txt:'🔀 交换机：查 MAC 表 → 按目的 MAC 转发；只重算 FCS，其余字段原样', dev:'sw' },
+    rtr: { txt:'🌐 路由器：改写源/目的 MAC、TTL −1、重算 IP 校验和；IP/端口/数据不变', dev:'rtr' },
+    s:   { txt:'🖧 服务器：接收并处理数据包（本会话目的地）', dev:null },
+    c:   { txt:'🖥️ 客户端：接收并处理数据包（本会话发起方）', dev:null }
+  };
+  var idx = 0, timer = null, playing = false, segTimer = null, chips = [];
+  var segIdx = 0, route = [];
+
+  function addItem(p){
+    idx++;
+    var chip = document.createElement('div');
+    chip.className = 'chip';
+    chip.textContent = '#' + idx + ' ' + p.name + '  ' + p.tag;
+    chip.onclick = function(){
+      selectChip(this, p);
+      renderDetail(p, p.focus);
+      selectDtlChip(PKTS.indexOf(p));
+      var dc = document.querySelector('.card.detail');
+      dc.classList.add('hl'); setTimeout(function(){ dc.classList.remove('hl'); }, 1400);
+    };
+    listEl.appendChild(chip);
+    chips.push(chip);
+    infoBar.textContent = '已捕获 ' + idx + ' 个数据包 · 点击包查看解剖';
+    infoBar.style.color = '#3A4356';
+  }
+  function selectChip(chip, p){
+    for (var k = 0; k < chips.length; k++) chips[k].classList.remove('on');
+    chip.classList.add('on');
+    var n = chips.indexOf(chip) + 1;
+    infoBar.textContent = '已选中 #' + n + ' ' + p.name + '（' + (p.d === 1 ? '客户端 → 服务器' : '服务器 → 客户端') + '）· 解剖卡已更新';
+    infoBar.style.color = p.c;
+  }
+  function setDevHot(k, on){
+    var els = document.querySelectorAll('.scene .endpoint');
+    for (var i = 0; i < els.length; i++){
+      var hit = on && els[i].getAttribute('data-dev') === k;
+      els[i].classList.toggle('hot', hit);
+    }
+  }
+  function showBubble(txt){
+    if (!txt){ bubble.classList.remove('on'); return; }
+    bubble.textContent = txt;
+    bubble.classList.add('on');
+  }
+  function selectDev(k, silent){
+    hopCur = k;
+    renderHopPath(); renderHopDev(); renderHopTable();
+    setDevHot(k, true);
+    if (!silent) showBubble(DEV_TIP[k] ? DEV_TIP[k].txt : null);
+  }
+  function showSeg(p){
+    if (segIdx >= route.length - 1){
+      showBubble(null);
+      setDevHot(NODES[route[route.length-1]].k, true);
+      addItem(p);
+      return;
+    }
+    var fromN = NODES[route[segIdx]], toN = NODES[route[segIdx + 1]];
+    pktEl.style.transition = 'none'; pktEl.style.left = fromN.left + '%';
+    void pktEl.offsetWidth;
+    pktEl.style.transition = 'left .6s linear, opacity .25s ease';
+    pktEl.style.left = toN.left + '%';
+    segIdx++;
+    clearTimeout(segTimer);
+    segTimer = setTimeout(function(){
+      var dk = NODES[route[segIdx - 1]].k;
+      var tip = DEV_TIP[dk];
+      if (tip){
+        setDevHot(dk, true);
+        showBubble(tip.txt);
+        if (tip.dev) selectDev(tip.dev, true);
+      }
+      note.textContent = (p.d === 1 ? '客户端 → 服务器：' : '服务器 → 客户端：') + p.name + ' · 到达 ' + NODE_NAME[dk];
+      clearTimeout(segTimer);
+      segTimer = setTimeout(function(){ showSeg(p); }, 520);
+    }, 620);
+  }
+  function show(i){
+    var p = PKTS[i];
+    if (!p) { stop(); return; }
+    pktEl.textContent = p.name;
+    pktEl.style.background = 'linear-gradient(135deg,' + p.c + ',#EAF1FB)';
+    pktEl.style.borderColor = p.c;
+    pktEl.style.opacity = '1';
+    route = p.d === 1 ? [0,1,2,3] : [3,2,1,0];
+    segIdx = 0;
+    showSeg(p);
+  }
+  function play(){
+    if (playing) return;
+    if (idx >= PKTS.length) reset();
+    playing = true; btnPlay.textContent = '⏸ 暂停';
+    timer = setInterval(function(){
+      if (idx >= PKTS.length) { stop(); return; }
+      show(idx);
+    }, 3600);
+  }
+  function stop(){
+    playing = false;
+    if (timer) { clearInterval(timer); timer = null; }
+    btnPlay.textContent = '▶ 播放';
+  }
+  function step(){ if (!playing && idx < PKTS.length) show(idx); }
+  function reset(){
+    stop();
+    if (segTimer) { clearTimeout(segTimer); segTimer = null; }
+    idx = 0; chips = [];
+    listEl.innerHTML = '';
+    infoBar.textContent = '还没有数据包，点击播放开始。';
+    infoBar.style.color = '#3A4356';
+    note.textContent = '点击 ▶ 播放，看数据包经过交换机、路由器时发生了什么';
+    showBubble(null);
+    setDevHot(null, false);
+    pktEl.style.opacity = '0';
+  }
+  /* 动画画布里的设备/端点可点击查看 */
+  (function(){
+    var els = document.querySelectorAll('.scene .endpoint');
+    for (var i = 0; i < els.length; i++){
+      els[i].onclick = function(){
+        var k = this.getAttribute('data-dev');
+        if (k === 'sw' || k === 'rtr'){ selectDev(k, false); return; }
+        setDevHot(k, true);
+        showBubble(DEV_TIP[k].txt);
+      };
+    }
+  })();
+
+  /* ================= ② 包解剖 ================= */
+  var ADDR = {
+    c: { ip:'192.168.1.10',   mac:'A4:5E:60:11:22:33' },
+    s: { ip:'93.184.216.34',  mac:'00:1A:2B:3C:4D:5E' }
+  };
+  var LAYER_META = {
+    eth:  { name:'以太网',   size:'14B',   cls:'l-eth',  flex:14 },
+    ip:   { name:'IP',       size:'20B',   cls:'l-ip',   flex:20 },
+    tcp:  { name:'TCP',      size:'20B',   cls:'l-tcp',  flex:20 },
+    http: { name:'HTTP 数据', size:'~30B', cls:'l-http', flex:30 }
+  };
+  function ethFields(d){
+    var f = d === 1 ? ADDR.c : ADDR.s, t = d === 1 ? ADDR.s : ADDR.c;
+    return [
+      ['目的 MAC', t.mac, d === 1 ? '服务器所在网段地址' : '客户端所在网段地址'],
+      ['源 MAC',   f.mac, d === 1 ? '本机网卡地址' : '服务器网卡地址'],
+      ['类型','0x0800','上层协议为 IPv4']
+    ];
+  }
+  function ipFields(d){
+    var src = d === 1 ? ADDR.c.ip : ADDR.s.ip, dst = d === 1 ? ADDR.s.ip : ADDR.c.ip;
+    return [
+      ['版本 / IHL','4 / 5','IPv4，头长 20 字节'],
+      ['源地址',   src, d === 1 ? '客户端 IP' : '服务器 IP'],
+      ['目的地址', dst, d === 1 ? '服务器 IP' : '客户端 IP'],
+      ['TTL','64','每过一跳减 1'],
+      ['协议','6 (TCP)','承载 TCP 段']
+    ];
+  }
+  var TCPF = {
+    syn: [
+      ['源端口','54321','客户端随机端口'],
+      ['目的端口','80','HTTP 服务端口'],
+      ['序号 Seq','0','初始序号(ISN)，握手起始'],
+      ['标志 Flags','SYN','请求建立连接'],
+      ['窗口','65535','接收窗口大小']
+    ],
+    synack: [
+      ['源端口','80','HTTP 服务端口'],
+      ['目的端口','54321','客户端随机端口'],
+      ['序号 Seq','0','服务器初始序号(ISN)'],
+      ['确认号 Ack','1','确认收到客户端 seq=0'],
+      ['标志 Flags','SYN + ACK','同意连接并应答'],
+      ['窗口','65535','接收窗口大小']
+    ],
+    ack: [
+      ['源端口','54321','客户端随机端口'],
+      ['目的端口','80','HTTP 服务端口'],
+      ['序号 Seq','1','续上次 seq=0 之后'],
+      ['确认号 Ack','1','确认收到服务器 seq=0'],
+      ['标志 Flags','ACK','连接建立完成'],
+      ['窗口','65535','接收窗口大小']
+    ],
+    req: [
+      ['源端口','54321','客户端随机端口'],
+      ['目的端口','80','HTTP 服务端口'],
+      ['序号 Seq','1','数据起始序号'],
+      ['确认号 Ack','1','确认号'],
+      ['标志 Flags','ACK + PSH','携带数据并推送'],
+      ['窗口','65535','接收窗口大小']
+    ],
+    res: [
+      ['源端口','80','HTTP 服务端口'],
+      ['目的端口','54321','客户端随机端口'],
+      ['序号 Seq','1','数据起始序号'],
+      ['确认号 Ack','1','确认号'],
+      ['标志 Flags','ACK + PSH','携带数据并推送'],
+      ['窗口','65535','接收窗口大小']
+    ]
+  };
+  var HTTPF = {
+    req: [
+      ['方法','GET','请求类型'],
+      ['路径','/','请求根路径'],
+      ['Host','example.com','目标站点'],
+      ['版本','HTTP/1.1','协议版本']
+    ],
+    res: [
+      ['状态行','HTTP/1.1 200 OK','请求成功'],
+      ['Content-Type','text/html; charset=utf-8','响应内容类型'],
+      ['Content-Length','22','响应体字节数']
+    ]
+  };
+  var HEX = {
+    syn: '0000  00 1a 2b 3c 4d 5e  a4 5e 60 11 22 33  08 00 45 00   ..+<M^..^`."3..E.\n'
+       + '0010  00 28 00 01 00 00  40 06 00 00 c0 a8 01 0a 5d b8   .(....@.......].]\n'
+       + '0020  d8 22 d4 31 00 50  00 00 00 00 00 00 00 00 50 02   .".1.P........P.\n'
+       + '0030  ff ff 00 00 00 00                                  ......',
+    synack: '0000  a4 5e 60 11 22 33  00 1a 2b 3c 4d 5e  08 00 45 00   .^`."3..+<M^..E.\n'
+       + '0010  00 28 00 01 00 00  40 06 00 00 5d b8 d8 22 c0 a8   .(....@...].."..\n'
+       + '0020  01 0a 00 50 d4 31  00 00 00 00 00 00 00 01 50 12   ..P.1........P.\n'
+       + '0030  ff ff 00 00 00 00                                  ......',
+    ack: '0000  00 1a 2b 3c 4d 5e  a4 5e 60 11 22 33  08 00 45 00   ..+<M^..^`."3..E.\n'
+       + '0010  00 28 00 01 00 00  40 06 00 00 c0 a8 01 0a 5d b8   .(....@.......].]\n'
+       + '0020  d8 22 d4 31 00 50  00 00 00 01 00 00 00 01 50 10   .".1.P........P.\n'
+       + '0030  ff ff 00 00 00 00                                  ......',
+    req: '0000  00 1a 2b 3c 4d 5e  a4 5e 60 11 22 33  08 00 45 00   ..+<M^..^`."3..E.\n'
+       + '0010  00 4c 00 02 00 00  40 06 00 00 c0 a8 01 0a 5d b8   .L....@.......].]\n'
+       + '0020  d8 22 d4 31 00 50  00 00 00 01 00 00 00 01 50 18   .".1.P........P.\n'
+       + '0030  ff ff 00 00 00 00  47 45 54 20 2f 20 48 54 54 50   ......GET / HTTP\n'
+       + '0040  2f 31 2e 31 0d 0a  48 6f 73 74 3a 20 65 78 61 6d   /1.1..Host: exam\n'
+       + '0050  70 6c 65 2e 63 6f  6d 0d 0a 0d 0a                  ple.com....',
+    res: '0000  a4 5e 60 11 22 33  00 1a 2b 3c 4d 5e  08 00 45 00   .^`."3..+<M^..E.\n'
+       + '0010  00 3e 00 02 00 00  40 06 00 00 5d b8 d8 22 c0 a8   .>....@...].."..\n'
+       + '0020  01 0a 00 50 d4 31  00 00 00 01 00 00 00 01 50 18   ..P.1........P.\n'
+       + '0030  ff ff 00 00 00 00  48 54 54 50 2f 31 2e 31 20 32   ......HTTP/1.1 2\n'
+       + '0040  30 30 20 4f 4b 0d  0a 0d 0a 48 69 21               00 OK....Hi!'
+  };
+
+  var dtlTitle = document.getElementById('dtlTitle');
+  var layersEl = document.getElementById('layersEl');
+  var fieldsEl = document.getElementById('fields');
+  var hexEl = document.getElementById('hexBox');
+  var hexLabel = document.getElementById('hexLabel');
+  var dtlPktsEl = document.getElementById('dtlPkts');
+  var dtlChips = [];
+  var cur = null;
+
+  function selectDtlChip(i){
+    for (var k = 0; k < dtlChips.length; k++) dtlChips[k].classList.toggle('on', k === i);
+  }
+  function fieldsFor(p, k){
+    if (k === 'eth') return ethFields(p.d);
+    if (k === 'ip')  return ipFields(p.d);
+    if (k === 'tcp') return TCPF[p.tcp];
+    return HTTPF[p.http];
+  }
+  /* 层 → 字节区间（标准以太网帧：eth 14B + IP 20B + TCP 20B + HTTP 负载） */
+  function layerSpan(bytesLen, k){
+    var seg = { eth:[0,14], ip:[14,34], tcp:[34,54], http:[54,bytesLen] };
+    var a = seg[k] || [0, bytesLen];
+    return [Math.max(0,a[0]), Math.min(a[1], bytesLen)];
+  }
+  function layerOfByte(b, bytesLen){
+    if (b < 14) return 'eth';
+    if (b < 34) return 'ip';
+    if (b < 54) return 'tcp';
+    return 'http';
+  }
+  function pad4(n){ n = n.toString(16).toUpperCase(); while (n.length < 4) n = '0' + n; return n; }
+  /* 按固定列位解析 hex dump 的字节区：每行 = 偏移(6) + 字节段（段间双空格）+ ASCII；
+     逐段提取，段内全是 2 位 hex 才收下，遇到 ASCII 段即停止本行 */
+  function hexBytes(key){
+    var out = [], lines = HEX[key].split('\n');
+    for (var i = 0; i < lines.length; i++){
+      var segs = lines[i].slice(6).split('  ');
+      for (var s = 0; s < segs.length; s++){
+        var parts = segs[s].trim().split(/\s+/), ok = parts.length > 0;
+        for (var j = 0; j < parts.length; j++){
+          if (!/^[0-9a-f]{2}$/.test(parts[j])) { ok = false; break; }
+        }
+        if (!ok) break;
+        for (var k = 0; k < parts.length; k++) out.push(parts[k].toUpperCase());
+      }
+    }
+    return out;
+  }
+  function parseHexLen(key){ return hexBytes(key).length; }
+  /* 渲染 hex dump：按层给字节着色，选中层字节高亮 */
+  function hexHtml(p, k){
+    var bytes = hexBytes(p.hex);
+    var act = layerSpan(bytes.length, k);
+    var html = '';
+    for (var r = 0; r < bytes.length; r += 16){
+      html += '<span class="hx-off">' + pad4(r) + '  </span>';
+      for (var c = 0; c < 16 && r + c < bytes.length; c++){
+        var b = r + c;
+        var on = b >= act[0] && b < act[1];
+        html += '<span class="hx l-' + layerOfByte(b, bytes.length) + (on ? ' on' : '') + '">' + bytes[b] + '</span>';
+        html += (c === 7) ? '  ' : ' ';
+      }
+      html += '  <span class="hx-asc">';
+      for (var a = r; a < r + 16 && a < bytes.length; a++){
+        var v = parseInt(bytes[a], 16);
+        html += (v >= 32 && v <= 126) ? String.fromCharCode(v) : '.';
+      }
+      html += '</span>\n';
+    }
+    return html;
+  }
+  function renderDetail(p, k){
+    cur = p;
+    dtlTitle.textContent = '数据包解剖 · ' + p.name;
+    var lhtml = '';
+    for (var i = 0; i < p.layers.length; i++){
+      var L = LAYER_META[p.layers[i]];
+      lhtml += '<div class="layer ' + L.cls + (p.layers[i] === k ? ' on' : '') +
+        '" data-k="' + p.layers[i] + '" style="flex:' + L.flex + ';">' +
+        '<span class="lb">' + L.name + '</span><span class="sz">' + L.size + '</span></div>';
+    }
+    layersEl.innerHTML = lhtml;
+    var ls = layersEl.children;
+    for (var j = 0; j < ls.length; j++){
+      ls[j].onclick = (function(kk){ return function(){ renderDetail(cur, kk); }; })(ls[j].getAttribute('data-k'));
+    }
+    var fs = fieldsFor(p, k), html = '';
+    html += '<div class="fr"><div style="flex:2;">字段</div><div style="flex:2;">值</div><div style="flex:3;">说明</div></div>';
+    for (var m = 0; m < fs.length; m++){
+      html += '<div class="fd">'
+        + '<div class="k">' + fs[m][0] + '</div>'
+        + '<div class="v">' + fs[m][1] + '</div>'
+        + '<div class="d">' + fs[m][2] + '</div></div>';
+    }
+    fieldsEl.innerHTML = html;
+    hexEl.innerHTML = hexHtml(p, k);
+    var act = layerSpan(parseHexLen(p.hex), k);
+    var selName = LAYER_META[k].name;
+    hexLabel.innerHTML = p.layers.indexOf('http') === -1
+      ? '<span class="hx-note">说明：该包为控制报文（如三次握手），仅含以太网 + IP + TCP 头部，无应用层负载，总长 54 字节。</span>'
+      : '<span class="hx-note">原始字节为示意数据。</span>'
+      + '<span class="hx-note" style="margin-left:8px;">点击左侧协议层 → 高亮对应字节（当前：' + selName + '，字节 ' + act[0] + '–' + (act[1]-1) + '）</span>';
+  }
+  /* 解剖区顶部的包选择条 */
+  (function(){
+    var html = '';
+    for (var i = 0; i < PKTS.length; i++){
+      html += '<div class="chip" data-pi="' + i + '">#' + (i + 1) + ' ' + PKTS[i].name + '</div>';
+    }
+    dtlPktsEl.innerHTML = html;
+    var els = dtlPktsEl.children;
+    for (var j = 0; j < els.length; j++){
+      els[j].onclick = (function(pi){ return function(){
+        selectDtlChip(pi);
+        renderDetail(PKTS[pi], PKTS[pi].focus);
+      }; })(j);
+    }
+    dtlChips = Array.prototype.slice.call(els);
+  })();
+
+  /* ================= ③ 跨设备变化 ================= */
+  var HOP = {
+    sw: {
+      name:'交换机', layer:'二层 · 数据链路层', icon:'🔀',
+      action:'学习 MAC 地址表 → 查表 → 按目的 MAC 从对应端口转发（透明转发）',
+      head:['进入交换机时','离开交换机后'],
+      rows:[
+        {k:'目的 MAC', a:'00:1A:2B:3C:4D:5E', b:'00:1A:2B:3C:4D:5E', ch:false, tag:'不变', note:'交换机不改 MAC，透明转发'},
+        {k:'源 MAC',   a:'A4:5E:60:11:22:33', b:'A4:5E:60:11:22:33', ch:false, tag:'不变'},
+        {k:'TTL',      a:'64', b:'64', ch:false, tag:'不变'},
+        {k:'源 / 目的 IP', a:'192.168.1.10 → 93.184.216.34', b:'同左', ch:false, tag:'不变'},
+        {k:'端口 / 序号',  a:'54321→80 · seq=1', b:'同左', ch:false, tag:'不变'},
+        {k:'FCS 校验',  a:'0x4A1F', b:'0x7C2E（重算）', ch:true, tag:'变', note:'转发有延迟，需重算帧尾校验'}
+      ],
+      tip:'交换机"只看 MAC、不改内容"：源/目的 MAC、IP、端口、数据全都不变，只更新帧尾校验 FCS。很多同学以为交换机会改地址，其实它是透明转发。'
+    },
+    rtr: {
+      name:'路由器', layer:'三层 · 网络层', icon:'🌐',
+      action:'剥掉二层帧头 → 查路由表 → 选定出接口和下一跳 → 重新封装新帧',
+      head:['进入路由器时','离开路由器后'],
+      rows:[
+        {k:'目的 MAC', a:'00:1A:2B:3C:4D:5E（路由器 LAN 口）', b:'66:77:88:99:AA:BB（服务器）', ch:true, tag:'变', note:'换成下一跳设备的 MAC'},
+        {k:'源 MAC',   a:'A4:5E:60:11:22:33（客户端）', b:'CC:DD:EE:FF:00:11（路由器 WAN 口）', ch:true, tag:'变', note:'换成路由器出接口 MAC'},
+        {k:'TTL',      a:'64', b:'63', ch:true, tag:'变', note:'每过一跳减 1，防止环路'},
+        {k:'IP 校验和', a:'0xB2E4', b:'0x8F01（重算）', ch:true, tag:'变', note:'TTL 变了必须重算'},
+        {k:'源 / 目的 IP', a:'192.168.1.10 → 93.184.216.34', b:'同左', ch:false, tag:'不变', note:'无 NAT 时不变'},
+        {k:'端口 / 序号',  a:'54321→80 · seq=1', b:'同左', ch:false, tag:'不变'},
+        {k:'数据',      a:'GET / HTTP/1.1…', b:'同左', ch:false, tag:'不变'}
+      ],
+      tip:'路由器连接两个网段：MAC 地址只在同一网段内有效，所以每跨一个网段都要重写二层帧头；TTL 每跳减 1 防止环路。而源/目的 IP、端口、数据是"端到端"语义，一路不变（除非做了 NAT）。'
+    }
+  };
+  var HOP_NODES = [
+    {k:'c',   name:'客户端', icon:'🖥️', end:true},
+    {k:'sw',  name:'交换机', icon:'🔀', end:false},
+    {k:'rtr', name:'路由器', icon:'🌐', end:false},
+    {k:'s',   name:'服务器', icon:'🖧', end:true}
+  ];
+  var hopCur = 'rtr';
+  function renderHopPath(){
+    var html = '';
+    for (var i = 0; i < HOP_NODES.length; i++){
+      var n = HOP_NODES[i], isCur = !n.end && n.k === hopCur;
+      html += '<div data-k="' + n.k + '" class="hop-node' + (isCur ? ' active' : '') + (n.end ? ' end' : '') + '">'
+        + '<div class="ni">' + n.icon + '</div>'
+        + '<div class="nn">' + n.name + '</div>'
+        + '<div class="nt">' + (n.end ? '端点' : (isCur ? '← 正在查看' : '点击查看')) + '</div></div>';
+      if (i < HOP_NODES.length - 1) html += '<div class="hop-arrow">→</div>';
+    }
+    document.getElementById('hopPath').innerHTML = html;
+    var els = document.querySelectorAll('#hopPath .hop-node:not(.end)');
+    for (var j = 0; j < els.length; j++){
+      els[j].onclick = function(){
+        hopCur = this.getAttribute('data-k');
+        renderHopPath(); renderHopDev(); renderHopTable();
+        setDevHot(hopCur, true);
+      };
+    }
+  }
+  function renderHopDev(){
+    var d = HOP[hopCur];
+    document.getElementById('hopDev').innerHTML =
+      '<div style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap;">'
+      + '<div style="font-size:22px;">' + d.icon + '</div>'
+      + '<div style="flex:1 1 0;min-width:220px;">'
+      + '<div class="hd">' + d.name + '<span class="hl">' + d.layer + '</span></div>'
+      + '<div class="ha">' + d.action + '</div>'
+      + '</div></div>';
+  }
+  function renderHopTable(){
+    var d = HOP[hopCur], html = '';
+    html += '<div class="th"><div style="flex:1.2;">字段</div><div style="flex:1.6;">' + d.head[0] + '</div><div style="flex:1.6;">' + d.head[1] + '</div><div style="flex:0.6;">状态</div></div>';
+    for (var i = 0; i < d.rows.length; i++){
+      var r = d.rows[i];
+      html += '<div class="tr">'
+        + '<div class="ck">' + r.k + '</div>'
+        + '<div class="cv' + (r.ch ? ' ch' : '') + '">' + r.a + '</div>'
+        + '<div class="cv' + (r.ch ? ' ch' : '') + '">' + r.b + '</div>'
+        + '<div class="cs"><span class="tag ' + (r.ch ? 'ch' : 'no') + '">' + r.tag + '</span></div></div>';
+      if (r.note) html += '<div class="tr-note">↳ ' + r.note + '</div>';
+    }
+    html += '<div class="hop-tip">' + d.tip + '</div>';
+    document.getElementById('hopTable').innerHTML = html;
+  }
+
+  /* ================= 启动 ================= */
+  renderDetail(PKTS[3], 'http');
+  selectDtlChip(3);
+  renderHopPath(); renderHopDev(); renderHopTable();
+  window.Demo = { play: play, step: step, reset: reset };
+})();
+</script>
+</body>
+</html>

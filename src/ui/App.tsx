@@ -22,7 +22,6 @@ import {
   Table,
   Tag,
   List,
-  Descriptions,
   Select,
   Button,
   Card,
@@ -30,11 +29,12 @@ import {
 } from 'antd';
 import { FolderOpenOutlined, PlusOutlined, CaretRightOutlined, CodeOutlined, TableOutlined, RightOutlined, LeftOutlined, PauseCircleOutlined, StepForwardOutlined, ReloadOutlined } from '@ant-design/icons';
 import zhCN from 'antd/locale/zh_CN';
-import type { Device, DeviceId, DeviceKind, Layer, Packet, ServiceState } from '@/domain/types';
+import type { Device, DeviceId, DeviceKind, Packet, ServiceState } from '@/domain/types';
 import { useStore } from '@/state/store';
 import { viz } from '@/visualization/registry';
 import { SimulationEngine, protoOf, type SimEvent } from '@/engine/SimulationEngine';
 import TerminalBody from '@/terminal/TerminalBody';
+import PacketDissect from '@/ui/PacketDissect';
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -173,56 +173,6 @@ function rowOfPacket(p: Packet, info: string, seq: number): TraceRow {
   return { key: `e-${p.id}`, seq, time: (seq * 0.001).toFixed(3), proto, src, dst, info };
 }
 
-// 层名与字段抽取（报文详情悬浮窗用；文案走 i18n）
-function layerTitle(kind: Layer['kind']): string {
-  return i18n.t(`layer.${kind}`);
-}
-
-function layerFields(layer: Layer): Array<[string, string]> {
-  switch (layer.kind) {
-    case 'ethernet':
-      return [[i18n.t('field.dstMac'), layer.dstMac], [i18n.t('field.srcMac'), layer.srcMac], [i18n.t('field.etherType'), layer.etherType]];
-    case 'arp':
-      return [
-        [i18n.t('arp.op'), layer.op === 'request' ? i18n.t('arp.request') : i18n.t('arp.reply')],
-        [i18n.t('arp.senderIp'), layer.senderIp], [i18n.t('arp.senderMac'), layer.senderMac],
-        [i18n.t('arp.targetIp'), layer.targetIp], [i18n.t('arp.targetMac'), layer.targetMac],
-      ];
-    case 'ip':
-      return [[i18n.t('ip.src'), layer.srcIp], [i18n.t('ip.dst'), layer.dstIp], [i18n.t('ip.ttl'), String(layer.ttl)], [i18n.t('ip.proto'), layer.protocol]];
-    case 'icmp':
-      return [[i18n.t('icmp.type'), layer.type]];
-    case 'tcp':
-      return [
-        [i18n.t('tcp.srcPort'), String(layer.srcPort)], [i18n.t('tcp.dstPort'), String(layer.dstPort)],
-        [i18n.t('tcp.seq'), String(layer.seq)], [i18n.t('tcp.ack'), String(layer.ack)],
-        [i18n.t('tcp.flags'), `${layer.syn ? 'SYN ' : ''}${layer.ackFlag ? 'ACK' : ''}`.trim() || '—'],
-      ];
-    case 'udp':
-      return [[i18n.t('tcp.srcPort'), String(layer.srcPort)], [i18n.t('tcp.dstPort'), String(layer.dstPort)]];
-    case 'dhcp': {
-      const fields: Array<[string, string]> = [
-        [i18n.t('dhcp.msgType'), layer.messageType], [i18n.t('dhcp.xid'), `0x${layer.xid.toString(16)}`], [i18n.t('dhcp.chaddr'), layer.chaddr],
-      ];
-      if (layer.hostname) fields.push([i18n.t('lease.host'), layer.hostname]);
-      if (layer.yiaddr) fields.push([i18n.t('dhcp.yiaddr'), layer.yiaddr]);
-      if (layer.netmask) fields.push([i18n.t('dhcp.netmask'), layer.netmask]);
-      if (layer.gateway) fields.push([i18n.t('dhcp.gateway'), layer.gateway]);
-      return fields;
-    }
-    case 'dns': {
-      const fields: Array<[string, string]> = [
-        [i18n.t('dns.qr'), layer.qr === 'query' ? i18n.t('dns.query') : i18n.t('dns.reply')],
-        [i18n.t('dhcp.xid'), `0x${layer.xid.toString(16)}`], [i18n.t('dns.name'), layer.name ?? '—'],
-      ];
-      if (layer.answer) fields.push([i18n.t('dns.answer'), layer.answer]);
-      if (layer.rc === 'NXDOMAIN') fields.push([i18n.t('dns.rc'), 'NXDOMAIN']);
-      return fields;
-    }
-    case 'http':
-      return [[i18n.t('http.method'), layer.method ?? '—'], [i18n.t('http.host'), layer.host ?? '—'], [i18n.t('http.path'), layer.path ?? '—'], [i18n.t('http.status'), layer.status ? String(layer.status) : '—']];
-  }
-}
 
 // —— React Flow 节点/边：data 只带投影所需最小信息，内容经 store 订阅 ——
 type DeviceData = { kind: Kind; deviceId: DeviceId };
@@ -434,8 +384,7 @@ function Shell() {
   const [panelOpen, setPanelOpen] = useState(true);
   const [traceOpen, setTraceOpen] = useState(true);
   const [traceWidth, setTraceWidth] = useState(400);
-  const [details, setDetails] = useState<Array<{ id: number; row: TraceRow; packet: Packet; x: number; y: number }>>([]);
-  const detailSeq = useRef(0);
+  const [detailIdx, setDetailIdx] = useState<number | null>(null); // 解剖选中的追踪行（WF-20 内联包解剖）
   const termSeq = useRef(0);
   const [traces, setTraces] = useState<TraceRow[]>([]);
   const [tracePkts, setTracePkts] = useState<Packet[]>([]);
@@ -580,43 +529,6 @@ function Shell() {
     window.addEventListener('mouseup', onUp);
   }
 
-  // 打开一个报文详情悬浮窗（支持同时多个，层叠排布）
-  function openDetail(row: TraceRow, index: number) {
-    detailSeq.current += 1;
-    const id = detailSeq.current;
-    const n = details.length;
-    setDetails((ds) => [
-      ...ds,
-      {
-        id,
-        row,
-        packet: tracePkts[index],
-        x: Math.min(Math.max(window.innerWidth - 580, 20), 480 + n * 28),
-        y: 90 + n * 24,
-      },
-    ]);
-  }
-
-  // 按住悬浮窗标题栏拖动
-  function startDragPanel(id: number, e: React.MouseEvent) {
-    e.preventDefault();
-    const inst = details.find((d) => d.id === id);
-    if (!inst) return;
-    const startX = e.clientX;
-    const startY = e.clientY;
-    const { x, y } = inst;
-    function onMove(ev: MouseEvent) {
-      setDetails((ds) => ds.map((d) => (d.id === id ? { ...d, x: x + ev.clientX - startX, y: y + ev.clientY - startY } : d)));
-    }
-    function onUp() {
-      document.body.style.userSelect = '';
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
-    }
-    document.body.style.userSelect = 'none';
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
-  }
 
   // 打开设备终端悬浮窗（可同时多个；内容 = 真终端 TerminalBody，按设备 id 关联 store）
   function openTerminal(deviceId: string) {
@@ -846,7 +758,7 @@ function Shell() {
     rowSeqRef.current = 0;
     setTraces([]);
     setTracePkts([]);
-    setDetails([]);
+    setDetailIdx(null);
     setTraceOpen(true);
     const host = url.trim() || 'www.example.com';
     switch (cmdKind) {
@@ -930,9 +842,8 @@ function Shell() {
     runGen.current += 1; // 使进行中的动画全部失效
     simStateRef.current = 'idle';
     setSimState('idle');
-    setTraces([]);
     setTracePkts([]);
-    setDetails([]);
+    setDetailIdx(null);
     setVizDots([]);
     setFlashEdgeId(null);
     engine.reset(); // 清引擎队列/等待者
@@ -1221,8 +1132,8 @@ function Shell() {
                     dataSource={traces}
                     renderItem={(row, index) => (
                       <List.Item
-                        onClick={() => { openDetail(row, index); replayHop(row); }}
-                        style={{ display: 'block', padding: '6px 4px', cursor: 'pointer' }}
+                        onClick={() => { setDetailIdx(index); replayHop(row); }}
+                        style={{ display: 'block', padding: '6px 4px', cursor: 'pointer', background: index === detailIdx ? '#e6f4ff' : undefined }}
                       >
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                           <span style={{ flexShrink: 0, fontSize: 11, fontWeight: 700, color: '#8c8c8c', minWidth: 16, textAlign: 'center' }}>
@@ -1242,6 +1153,10 @@ function Shell() {
                       </List.Item>
                     )}
                   />
+                </div>
+                {/* WF-20 包解剖：内联于追踪列表下方，点行即解剖，无对话框 */}
+                <div style={{ height: '46%', flexShrink: 0, borderTop: '1px solid #e5e5e5', overflowY: 'auto', padding: '8px 10px' }}>
+                  <PacketDissect packet={detailIdx !== null ? tracePkts[detailIdx] : undefined} />
                 </div>
               </div>
             </>
@@ -1396,52 +1311,6 @@ function Shell() {
         )}
       </Drawer>
 
-      {/* 报文详情悬浮窗（可拖拽、可同时打开多个） */}
-      {details.map((p) => (
-        <Card
-          key={p.id}
-          size="small"
-          title={
-            <span
-              style={{ cursor: 'move', userSelect: 'none', display: 'block', width: '100%' }}
-              onMouseDown={(e) => startDragPanel(p.id, e)}
-            >
-              {t('packet.detailTitle', { proto: p.row.proto.toUpperCase() })}
-            </span>
-          }
-          extra={<a onClick={() => setDetails((ds) => ds.filter((d) => d.id !== p.id))}>{t('common.close')}</a>}
-          style={{
-            position: 'fixed', left: p.x, top: p.y, width: 560, zIndex: 1000 + p.id,
-            boxShadow: '0 6px 24px rgba(0,0,0,0.22)',
-          }}
-        >
-          <Descriptions
-            size="small"
-            column={2}
-            bordered
-            items={[
-              { key: 'time', label: t('packet.time'), children: `${p.row.time}s` },
-              { key: 'proto', label: t('packet.proto'), children: p.row.proto.toUpperCase() },
-              { key: 'src', label: t('packet.src'), children: p.row.src },
-              { key: 'dst', label: t('packet.dst'), children: p.row.dst },
-            ]}
-          />
-          <div style={{ margin: '12px 0 6px', fontWeight: 600 }}>{t('packet.layers')}</div>
-          {p.packet.layers.map((layer, i) => (
-            <div key={i} style={{ border: '1px solid #e5e5e5', borderRadius: 6, padding: '6px 10px', marginBottom: 6 }}>
-              <div style={{ fontWeight: 600, marginBottom: 4 }}>
-                {i + 1}. {layerTitle(layer.kind)}
-                <Tag style={{ marginInlineStart: 8 }}>{layer.kind}</Tag>
-              </div>
-              <Descriptions
-                size="small"
-                column={2}
-                items={layerFields(layer).map(([k, v], j) => ({ key: `${j}`, label: k, children: v }))}
-              />
-            </div>
-          ))}
-        </Card>
-      ))}
 
       {/* 设备终端悬浮窗（可拖拽、可同时打开多个；内容 = 真终端命令注册表 TerminalBody） */}
       {terminals.map((tm) => {
