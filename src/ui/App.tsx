@@ -9,7 +9,7 @@
  *   apache2）。追踪/详情/动画为引擎事件的 UI 壳。
  * - 全部界面文案接入 react-i18next（中文默认）。
  */
-import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { createContext, Fragment, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   App as AntApp,
@@ -27,7 +27,7 @@ import {
   Card,
   Space,
 } from 'antd';
-import { FolderOpenOutlined, PlusOutlined, CaretRightOutlined, CodeOutlined, TableOutlined, RightOutlined, LeftOutlined, PauseCircleOutlined, StepForwardOutlined, ReloadOutlined } from '@ant-design/icons';
+import { FolderOpenOutlined, PlusOutlined, CaretRightOutlined, CloseOutlined, CodeOutlined, TableOutlined, RightOutlined, LeftOutlined, PauseCircleOutlined, StepForwardOutlined, ReloadOutlined } from '@ant-design/icons';
 import zhCN from 'antd/locale/zh_CN';
 import type { Device, DeviceId, DeviceKind, Packet, ServiceState } from '@/domain/types';
 import { useStore } from '@/state/store';
@@ -44,10 +44,14 @@ import {
   Handle,
   Position,
   ConnectionMode,
+  useConnection,
   useReactFlow,
+  BaseEdge,
+  getStraightPath,
 } from '@xyflow/react';
-import type { Connection as FlowConnection, Edge, EdgeChange, Node, NodeChange, NodeProps } from '@xyflow/react';
+import type { Connection as FlowConnection, Edge, EdgeChange, EdgeProps, Node, NodeChange, NodeProps } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
+import './canvas.css';
 import i18n from '@/i18n';
 
 // —— 设备类型（面板名 → 画布图标，完全取自原项目 assets）——
@@ -118,11 +122,11 @@ function ifaceIp(d: Device): string | null {
   return null;
 }
 
-// —— 设备节点动作（终端/租约等），由 Shell 通过 Context 提供给节点组件 ——
 const NodeActions = createContext<{
   openTerminal: (deviceId: string) => void;
   openLeases: (deviceId: string) => void;
-}>({ openTerminal: () => {}, openLeases: () => {} });
+  deleteDevice: (deviceId: string) => void;
+}>({ openTerminal: () => {}, openLeases: () => {}, deleteDevice: () => {} });
 
 // —— 面板条目（顺序/图标与原项目 panel.js 一致；悬浮画布底部居中，不分组）——
 interface PanelItem {
@@ -175,6 +179,9 @@ function rowOfPacket(p: Packet, info: string, seq: number): TraceRow {
 
 
 // —— React Flow 节点/边：data 只带投影所需最小信息，内容经 store 订阅 ——
+/** 路由器端口点位置（按接口序取位：enp0s3 左 / enp0s8 右 / enp0s9 顶）。 */
+const PORT_POS = [Position.Left, Position.Right, Position.Top] as const;
+
 type DeviceData = { kind: Kind; deviceId: DeviceId };
 type DeviceFlowNode = Node<DeviceData, 'device'>;
 
@@ -182,42 +189,98 @@ function DeviceNodeView({ data }: NodeProps<DeviceFlowNode>) {
   const { t } = useTranslation();
   const actions = useContext(NodeActions);
   const [hover, setHover] = useState(false);
-  // 节点内容 = store 真 Device（WF-15）：删除/改名/改 IP 后画布自动同步。
+  const conn = useConnection();
   const device = useStore((s) => s.topology.devices[data.deviceId]);
   if (!device) return null;
   const kind = uiKindOf(device);
   const ip = ifaceIp(device);
+  // 路由器端口映射连接点：悬停或任意连线拖拽中显示端口与 IP
+  const showPorts = device.kind === 'router' && (hover || conn.inProgress);
   return (
     <div
       style={{ width: 80, height: 80 }}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
     >
-      <Handle id="src-c" type="source" position={Position.Top} style={{ left: '50%', top: '50%', opacity: 0 }} />
+      {device.kind !== 'router' && (
+        <Handle id="src-c" type="source" position={Position.Top} style={{ left: '50%', top: '50%', opacity: 0 }} />
+      )}
       <img
         src={`/assets/board/${boardIcon[kind]}`}
         alt={t(kindKey[kind])}
         style={{ width: '100%', height: '100%', pointerEvents: 'none' }}
         draggable={false}
       />
-      <Handle id="tgt-c" type="target" position={Position.Top} style={{ left: '50%', top: '50%', opacity: 0 }} />
+      {device.kind !== 'router' && (
+        <Handle id="tgt-c" type="target" position={Position.Top} style={{ left: '50%', top: '50%', opacity: 0 }} />
+      )}
       {/* 连接点：始终挂载（拖拽中途卸载会中止连线），悬停时显示四边蓝点 */}
-      {(['top', 'right', 'bottom', 'left'] as const).map((pos) => (
-        <Handle
-          key={pos}
-          id={`src-${pos}`}
-          type="source"
-          position={pos === 'top' ? Position.Top : pos === 'bottom' ? Position.Bottom : pos === 'left' ? Position.Left : Position.Right}
-          style={{
-            opacity: hover ? 1 : 0,
-            pointerEvents: hover ? 'all' : 'none',
-            width: 11,
-            height: 11,
-            background: '#1677ff',
-            border: '2px solid #fff',
-          }}
-        />
-      ))}
+      {device.kind !== 'router' &&
+        (['top', 'right', 'bottom', 'left'] as const).map((pos) => (
+          <Handle
+            key={pos}
+            id={`src-${pos}`}
+            type="source"
+            position={pos === 'top' ? Position.Top : pos === 'bottom' ? Position.Bottom : pos === 'left' ? Position.Left : Position.Right}
+            style={{
+              opacity: hover ? 1 : 0,
+              pointerEvents: hover ? 'all' : 'none',
+              width: 11,
+              height: 11,
+              background: '#1677ff',
+              border: '2px solid #fff',
+            }}
+          />
+        ))}
+      {/* 路由器端口映射连接点：一接口一端口；已连线端口常显端口名+IP，未连线端口悬停点出
+          tooltip（贴画布右缘时铺开会裁切），连线拖拽中全部铺开供选口 */}
+      {device.kind === 'router' &&
+        Object.values(device.interfaces).map((f, i) => {
+          const pos = PORT_POS[i % PORT_POS.length];
+          const connected = f.connectedSwitchId !== null;
+          const label = f.ip ? (connected ? f.ip : `${f.ip} · ${t('port.unconnected')}`) : t('port.unconnected');
+          return (
+            <Fragment key={f.id}>
+              <Tooltip title={`${f.name} · ${label}`} placement={pos === Position.Left ? 'left' : 'top'}>
+                <Handle
+                  id={`p-${f.id}`}
+                  type="source"
+                  position={pos}
+                  style={{
+                    opacity: showPorts || connected ? 1 : 0,
+                    pointerEvents: showPorts && !connected ? 'all' : 'none',
+                    width: 11,
+                    height: 11,
+                    background: connected ? '#bfbfbf' : '#1677ff',
+                    border: '2px solid #fff',
+                  }}
+                />
+              </Tooltip>
+              {(connected || conn.inProgress) && (
+                <div
+                  style={{
+                    position: 'absolute', zIndex: 2, pointerEvents: 'none', width: 'max-content',
+                    ...(pos === Position.Left
+                      ? { right: 'calc(100% + 10px)', top: '50%', transform: 'translateY(-50%)', textAlign: 'right' }
+                      : pos === Position.Right
+                        ? { left: 'calc(100% + 10px)', top: '50%', transform: 'translateY(-50%)' }
+                        : { bottom: 'calc(100% + 8px)', left: '50%', transform: 'translateX(-50%)', textAlign: 'center' }),
+                  }}
+                >
+                  <div style={{ fontSize: 10, fontWeight: 600, lineHeight: '13px', color: '#1f1f1f', textShadow: '0 0 3px #fff, 0 0 3px #fff, 0 0 3px #fff' }}>
+                    {f.name}
+                  </div>
+                  <div style={{ fontSize: 10, lineHeight: '13px', color: connected ? '#444' : '#999', textShadow: '0 0 3px #fff, 0 0 3px #fff' }}>
+                    {label}
+                  </div>
+                </div>
+              )}
+            </Fragment>
+          );
+        })}
+      {/* 删除 ×：贴左上角（left=-8）与节点框重叠 —— 若整体悬在节点外，鼠标移向按钮
+          会先触发节点 mouseleave 使按钮卸载，永远点不到（WF-24 用户反馈） */}
+      {hover && iconBtn(t('panel.deleteDevice'), -8, () => actions.deleteDevice(device.id), <CloseOutlined style={{ fontSize: 12, color: '#ff4d4f' }} />, -8)}
       {hover && iconBtn(t('panel.openTerminal'), -8, () => actions.openTerminal(device.id), <CodeOutlined style={{ fontSize: 12 }} />)}
       {hover && kind === 'dhcpserver' && iconBtn(t('panel.leases'), 18, () => actions.openLeases(device.id), <TableOutlined style={{ fontSize: 12 }} />)}
       {/* 设备名牌：名称 + IP（按类型区分；绝对定位，不影响节点尺寸与连线中心） */}
@@ -230,7 +293,8 @@ function DeviceNodeView({ data }: NodeProps<DeviceFlowNode>) {
         <div className="dev-name" style={{ fontSize: 12, fontWeight: 600, lineHeight: '16px', color: '#1f1f1f', textShadow: '0 0 3px #fff, 0 0 3px #fff, 0 0 3px #fff' }}>
           {device.label}
         </div>
-        {ip && (
+        {/* 路由器多接口，名牌不显示单一 IP（各口 IP 见端口标签） */}
+        {device.kind !== 'router' && ip && (
           <div className="dev-ip" style={{ fontSize: 11, lineHeight: '14px', color: '#444', textShadow: '0 0 3px #fff, 0 0 3px #fff' }}>
             {ip}
           </div>
@@ -240,14 +304,15 @@ function DeviceNodeView({ data }: NodeProps<DeviceFlowNode>) {
   );
 }
 
-function iconBtn(tip: string, right: number, onClick: () => void, icon: React.ReactNode) {
+function iconBtn(tip: string, right: number, onClick: () => void, icon: React.ReactNode, left?: number) {
   return (
     <Tooltip title={tip} placement="top">
       <button
         onMouseDown={(e) => e.stopPropagation()}
         onClick={(e) => { e.stopPropagation(); onClick(); }}
         style={{
-          position: 'absolute', top: -8, right, width: 22, height: 22, borderRadius: '50%',
+          position: 'absolute', top: -8, right: left === undefined ? right : undefined, left,
+          width: 22, height: 22, borderRadius: '50%',
           border: '1px solid #d9d9d9', background: '#fff', cursor: 'pointer', padding: 0,
           display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 5,
           boxShadow: '0 1px 4px rgba(0,0,0,0.2)',
@@ -263,6 +328,41 @@ const nodeTypes = { device: DeviceNodeView };
 
 const edgeStyle = { stroke: '#5a7d7c', strokeWidth: 2 };
 const edgeFlashStyle = { stroke: '#fa8c16', strokeWidth: 4 };
+
+/**
+ * 线缆边（WF-24）：直线 + 悬停中点 × 断开钮。× 为同 <g> 内 SVG（靠
+ * `.react-flow__edge:hover` 纯 CSS 显隐，不用 EdgeLabelRenderer——跨容器后
+ * hover 会因移出连线 <g> 而提前消失）。点击 × 走 store.removeConnection 正规断线。
+ */
+function CableEdge({ id, sourceX, sourceY, targetX, targetY, style }: EdgeProps) {
+  const mx = (sourceX + targetX) / 2;
+  const my = (sourceY + targetY) / 2;
+  function removeEdge(e: React.MouseEvent) {
+    e.stopPropagation();
+    const st = useStore.getState();
+    const conn = st.topology.connections.find((c) => c.id === id);
+    if (conn) st.removeConnection(conn.fromDeviceId, conn.fromInterfaceId);
+  }
+  return (
+    <>
+      {/* interactionWidth 36：默认 20px 命中区太窄，斜线上极难点中（WF-24 用户反馈「线选不中」的根因） */}
+      <BaseEdge
+        id={id}
+        path={getStraightPath({ sourceX, sourceY, targetX, targetY })[0]}
+        style={style ?? edgeStyle}
+        interactionWidth={36}
+      />
+      <g className="edge-del" onClick={removeEdge}>
+        <title>{i18n.t('panel.disconnect')}</title>
+        <circle cx={mx} cy={my} r={7} fill="#fff" stroke="#ff4d4f" strokeWidth={1.5} />
+        <line x1={mx - 3} y1={my - 3} x2={mx + 3} y2={my + 3} stroke="#ff4d4f" strokeWidth={1.5} strokeLinecap="round" />
+        <line x1={mx - 3} y1={my + 3} x2={mx + 3} y2={my - 3} stroke="#ff4d4f" strokeWidth={1.5} strokeLinecap="round" />
+      </g>
+    </>
+  );
+}
+
+const edgeTypes = { cable: CableEdge };
 
 type CmdKind = 'ping' | 'tcp' | 'http' | 'ftp' | 'traceroute' | 'dns' | 'dhcp' | 'telnet' | 'arpscan';
 
@@ -316,7 +416,6 @@ const SERVICE_KEYS: Record<string, string> = {
   dhcrelay: 'svc.dhcrelay',
   named: 'svc.named',
   apache2: 'svc.apache2',
-  iptables: 'svc.iptables',
 };
 
 /** 服务配置详情行（抽屉「已安装服务」标签下的真实字段摘要；无细节可展示返回 null）。 */
@@ -348,9 +447,20 @@ function serviceDetailLine(name: string, config: unknown): string | null {
   return null;
 }
 
+/** 已启用服务条目（dhcpd 配置落在 device.dhcpPool，合成一条展示条目）。 */
+function enabledServiceEntries(d: Device): Array<[string, ServiceState]> {
+  const entries = Object.entries(d.services).filter(
+    (e): e is [string, ServiceState] => Boolean(e[1]?.enabled),
+  );
+  if (d.dhcpPool && !entries.some(([name]) => name === 'dhcpd')) {
+    entries.push(['dhcpd', { enabled: true, config: d.dhcpPool }]);
+  }
+  return entries;
+}
+
 function Shell() {
   const { t } = useTranslation();
-  const { message } = AntApp.useApp();
+  const { message, modal } = AntApp.useApp();
   // —— store.topology 投影（节点/边只是派生视图，永远不本地持有拓扑）——
   const deviceMap = useStore((s) => s.topology.devices);
   const connections = useStore((s) => s.topology.connections);
@@ -374,11 +484,14 @@ function Shell() {
         id: c.id,
         source: c.fromDeviceId,
         target: c.toSwitchId,
-        type: 'straight',
+        // 路由器连线锚定到其端口连接点（其余设备锚定节点中心）
+        sourceHandle:
+          deviceMap[c.fromDeviceId]?.kind === 'router' ? `p-${c.fromInterfaceId}` : undefined,
+        type: 'cable',
         style: edgeStyle,
         selected: selEdgeIds.includes(c.id),
       })),
-    [connections, selEdgeIds],
+    [connections, deviceMap, selEdgeIds],
   );
   const [selectedId, setSelectedId] = useState<DeviceId | null>(null);
   const [panelOpen, setPanelOpen] = useState(true);
@@ -455,7 +568,8 @@ function Shell() {
     }
   }
 
-  // 拉线（WF-15）：一端设备接口、一端交换机；路由器取第一个空闲接口接线
+  // 拉线（WF-15）：一端设备接口、一端交换机；路由器由所拖端口决定接口（端口映射连接点），
+  // 其余设备取第一个空闲接口
   function handleConnect(c: FlowConnection) {
     if (c.source === c.target) return;
     const st = useStore.getState();
@@ -468,13 +582,15 @@ function Shell() {
       message.warning(t('msg.needSwitch'));
       return;
     }
-    const free = Object.values(dev.interfaces).find((f) => f.connectedSwitchId === null);
-    if (!free) {
+    const handleId = dev.id === c.source ? c.sourceHandle : c.targetHandle;
+    const port = handleId?.startsWith('p-') ? dev.interfaces[handleId.slice(2)] : undefined;
+    const chosen = port ?? Object.values(dev.interfaces).find((f) => f.connectedSwitchId === null);
+    if (!chosen) {
       message.warning(t('msg.noFreeIface', { label: dev.label }));
       return;
     }
     try {
-      st.addConnection(dev.id, free.id, sw.id);
+      st.addConnection(dev.id, chosen.id, sw.id);
     } catch (err) {
       message.error((err as Error).message);
     }
@@ -887,11 +1003,33 @@ function Shell() {
   }, []);
 
   const selected = selectedId ? deviceMap[selectedId] : undefined;
+  // PC DHCP 客户端态（WF-23）：开 = 接口字段只读，静态地址由开关管理
+  const selDhcpOn = selected?.kind === 'pc' && Boolean(selected.services?.dhclient?.enabled);
   // 租约窗数据源：dhcp-server 设备上的真实租约（引擎 dhcpd 落盘，订阅 store 实时联动）
   const leaseServer = leaseWin && deviceMap[leaseWin.deviceId] ? deviceMap[leaseWin.deviceId] : undefined;
 
   return (
-    <NodeActions.Provider value={{ openTerminal, openLeases }}>
+    <NodeActions.Provider
+      value={{
+        openTerminal,
+        openLeases,
+        // 悬停 × 删除带确认（用户要求）；键盘删除保留直删
+        deleteDevice: (id) => {
+          const label = useStore.getState().topology.devices[id]?.label ?? id;
+          modal.confirm({
+            title: t('panel.deleteDevice'),
+            content: t('panel.deleteConfirm', { label }),
+            okText: t('common.confirm'),
+            cancelText: t('common.cancel'),
+            okButtonProps: { danger: true },
+            onOk: () => {
+              useStore.getState().removeDevice(id);
+              setSelectedId((cur) => (cur === id ? null : cur));
+            },
+          });
+        },
+      }}
+    >
       <div style={{ height: '100dvh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         {/* —— 顶部标题栏 —— */}
         <div
@@ -1008,8 +1146,9 @@ function Shell() {
               connectionRadius={80}
               onConnect={handleConnect}
               onDragOver={(e) => e.preventDefault()}
+              edgeTypes={edgeTypes}
               onDrop={onDropDevice}
-              defaultEdgeOptions={{ type: 'straight', style: edgeStyle }}
+              defaultEdgeOptions={{ type: 'cable', style: edgeStyle }}
               fitView
               fitViewOptions={{ padding: 0.2 }}
               style={{ width: '100%', height: '100%', background: '#fff' }}
@@ -1177,7 +1316,7 @@ function Shell() {
       >
         {selected && (
           <Form
-            key={selected.id}
+            key={`${selected.id}:${selDhcpOn ? 'dhcp' : 'static'}`}
             layout="vertical"
             initialValues={{
               label: selected.label,
@@ -1195,17 +1334,20 @@ function Shell() {
               const patch: Partial<Device> = { label: vals.label };
               if (selected.kind === 'router') patch.ipv4Forwarding = Boolean(vals.fwd);
               st.updateDevice(selected.id, patch);
-              Object.values(selected.interfaces).forEach((f, i) => {
-                const ip = (vals[`ip${i}`] as string | undefined)?.trim() || null;
-                const mask = (vals[`mask${i}`] as string | undefined)?.trim() || null;
-                if (ip || mask) {
-                  st.updateInterface(selected.id, f.id, { ip, netmask: mask });
-                }
-                const gw = (vals[`gw${i}`] as string | undefined)?.trim() || null;
-                if (selected.kind !== 'router' && gw) {
-                  st.updateInterface(selected.id, f.id, { gateway: gw });
-                }
-              });
+              // DHCP 客户端开：接口地址由租约管理，保存只改 label（字段只读不产生值）
+              if (!selDhcpOn) {
+                Object.values(selected.interfaces).forEach((f, i) => {
+                  const ip = (vals[`ip${i}`] as string | undefined)?.trim() || null;
+                  const mask = (vals[`mask${i}`] as string | undefined)?.trim() || null;
+                  if (ip || mask) {
+                    st.updateInterface(selected.id, f.id, { ip, netmask: mask });
+                  }
+                  const gw = (vals[`gw${i}`] as string | undefined)?.trim() || null;
+                  if (selected.kind !== 'router' && gw) {
+                    st.updateInterface(selected.id, f.id, { gateway: gw });
+                  }
+                });
+              }
               setSelectedId(null);
               message.success(t('msg.saved'));
             }}
@@ -1221,15 +1363,32 @@ function Shell() {
                 {selected.kind === 'router' && (
                   <Form.Item label={t('drawer.forwarding')} name="fwd" valuePropName="checked"><Switch /></Form.Item>
                 )}
+                {selected.kind === 'pc' && (
+                  <Form.Item label={t('drawer.dhcpClient')} valuePropName="checked">
+                    <Switch
+                      checked={selDhcpOn}
+                      onChange={(v) => {
+                        try {
+                          useStore.getState().setDhcpClient(selected.id, v);
+                        } catch (err) {
+                          message.error((err as Error).message);
+                        }
+                      }}
+                    />
+                  </Form.Item>
+                )}
                 <Form.Item label={t('drawer.interfaces')}>
                   {Object.values(selected.interfaces).map((f, i) => (
                     <div key={f.id} style={{ border: '1px solid #f0f0f0', borderRadius: 6, padding: '8px 10px', marginBottom: 8 }}>
                       <div style={{ fontWeight: 600, marginBottom: 6, fontSize: 13 }}>{f.name}</div>
                       <Space direction="vertical" style={{ width: '100%' }} size={4}>
-                        <Form.Item label={t('drawer.ip')} name={`ip${i}`} style={{ marginBottom: 4 }}><Input placeholder="0.0.0.0" /></Form.Item>
-                        <Form.Item label={t('drawer.mask')} name={`mask${i}`} style={{ marginBottom: 4 }}><Input placeholder="255.255.255.0" /></Form.Item>
+                        <Form.Item label={t('drawer.ip')} name={`ip${i}`} style={{ marginBottom: 4 }}><Input placeholder="0.0.0.0" disabled={selDhcpOn} /></Form.Item>
+                        <Form.Item label={t('drawer.mask')} name={`mask${i}`} style={{ marginBottom: 4 }}><Input placeholder="255.255.255.0" disabled={selDhcpOn} /></Form.Item>
                         {selected.kind !== 'router' && (
-                          <Form.Item label={t('drawer.gw')} name={`gw${i}`} style={{ marginBottom: 0 }}><Input placeholder="192.168.1.1" /></Form.Item>
+                          <Form.Item label={t('drawer.gw')} name={`gw${i}`} style={{ marginBottom: 0 }}><Input placeholder="192.168.1.1" disabled={selDhcpOn} /></Form.Item>
+                        )}
+                        {selDhcpOn && !f.ip && (
+                          <div style={{ color: '#999', fontSize: 12 }}>{t('drawer.dhcpHint')}</div>
                         )}
                       </Space>
                     </div>
@@ -1237,73 +1396,52 @@ function Shell() {
                 </Form.Item>
               </>
             )}
-            <Form.Item label={t('drawer.services')}>
-              {(() => {
-                const entries = Object.entries(selected.services).filter(
-                  (e): e is [string, ServiceState] => Boolean(e[1]?.enabled),
-                );
-                // dhcpd 配置实际落在 device.dhcpPool（WF-2/6 沿用）；补一条合成条目供展示
-                if (selected.dhcpPool && !entries.some(([name]) => name === 'dhcpd')) {
-                  entries.push(['dhcpd', { enabled: true, config: selected.dhcpPool }]);
-                }
-                if (entries.length === 0) {
-                  return <span style={{ color: '#999' }}>{t('common.none')}</span>;
-                }
-                return (
-                  <>
-                    <Space wrap>
-                      {entries.map(([name]) => (
-                        <Tag key={name} color={name === 'dhcpd' ? 'blue' : 'green'}>{t(SERVICE_KEYS[name] ?? 'common.none')}</Tag>
-                      ))}
-                    </Space>
-                    {entries.map(([name, svc]) => {
-                      const detail = serviceDetailLine(name, svc.config);
-                      return detail ? (
-                        <div key={`${name}-detail`} style={{ marginTop: 4, fontSize: 12, color: '#666' }}>
-                          {detail}
-                        </div>
-                      ) : null;
-                    })}
-                  </>
-                );
-              })()}
-            </Form.Item>
-            <Form.Item label={t('drawer.routingTable')}>
-              <Table
-                size="small"
-                pagination={false}
-                columns={[
-                  { title: t('route.net'), dataIndex: 'net' },
-                  { title: t('route.nextHop'), dataIndex: 'hop' },
-                  { title: t('route.egress'), dataIndex: 'egress' },
-                ]}
-                dataSource={
-                  selected.routingTable.length > 0
-                    ? selected.routingTable.map((r, i) => ({
-                        key: String(i),
-                        net: `${r.network}/${r.netmask}`,
-                        hop: r.nextHop === '0.0.0.0' ? t('route.direct') : r.nextHop,
-                        egress: r.interfaceId,
-                      }))
-                    : [{ key: 'empty', net: t('route.empty'), hop: '', egress: '' }]
-                }
-              />
-            </Form.Item>
-            <Form.Item label={t('drawer.firewall')}>
-              <Table
-                size="small"
-                pagination={false}
-                columns={[
-                  { title: t('fw.protocol'), dataIndex: 'p' },
-                  { title: t('fw.action'), dataIndex: 'a' },
-                ]}
-                dataSource={
-                  selected.firewall.rules.length > 0
-                    ? selected.firewall.rules.map((r, i) => ({ key: String(i), p: r.protocol ?? 'all', a: r.action }))
-                    : [{ key: 'none', p: t('common.none'), a: '' }]
-                }
-              />
-            </Form.Item>
+            {/* 服务区块：仅存在已启用服务时渲染（WF-22 按设备类型裁空区块） */}
+            {(() => {
+              const entries = enabledServiceEntries(selected);
+              if (entries.length === 0) return null;
+              return (
+                <Form.Item label={t('drawer.services')}>
+                  <Space wrap>
+                    {entries.map(([name]) => (
+                      <Tag key={name} color={name === 'dhcpd' ? 'blue' : 'green'}>{t(SERVICE_KEYS[name] ?? 'common.none')}</Tag>
+                    ))}
+                  </Space>
+                  {entries.map(([name, svc]) => {
+                    const detail = serviceDetailLine(name, svc.config);
+                    return detail ? (
+                      <div key={`${name}-detail`} style={{ marginTop: 4, fontSize: 12, color: '#666' }}>
+                        {detail}
+                      </div>
+                    ) : null;
+                  })}
+                </Form.Item>
+              );
+            })()}
+            {/* 路由表：仅路由器渲染（WF-22 裁空区块） */}
+            {selected.kind === 'router' && (
+              <Form.Item label={t('drawer.routingTable')}>
+                <Table
+                  size="small"
+                  pagination={false}
+                  columns={[
+                    { title: t('route.net'), dataIndex: 'net' },
+                    { title: t('route.nextHop'), dataIndex: 'hop' },
+                    { title: t('route.egress'), dataIndex: 'egress' },
+                  ]}
+                  dataSource={
+                    selected.routingTable.length > 0
+                      ? selected.routingTable.map((r, i) => ({
+                          key: String(i),
+                          net: `${r.network}/${r.netmask}`,
+                          hop: r.nextHop === '0.0.0.0' ? t('route.direct') : r.nextHop,
+                          egress: r.interfaceId,
+                        }))
+                      : [{ key: 'empty', net: t('route.empty'), hop: '', egress: '' }]
+                  }
+                />
+              </Form.Item>
+            )}
             <Button type="primary" htmlType="submit" block>
               {t('drawer.save')}
             </Button>

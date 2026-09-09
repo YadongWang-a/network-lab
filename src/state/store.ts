@@ -10,7 +10,7 @@ import type {
   Topology,
   Vec2,
 } from '@/domain/types';
-import { DEFAULT_SUBNETS, isValidCidr } from '@/domain/ipam';
+import { DEFAULT_SUBNETS, isValidCidr, SubnetPool } from '@/domain/ipam';
 import type { Cidr, Connection } from '@/domain/types';
 import { createDevice, KIND_LABEL } from '@/domain/deviceFactory';
 import { computeRouterRoutingTables } from '@/domain/routing';
@@ -61,6 +61,12 @@ export interface DevicesSlice {
     interfaceId: InterfaceId,
     patch: Partial<NetworkInterface>,
   ) => void;
+  /**
+   * PC DHCP 客户端开关（WF-23）：开 = 清空接口静态 IP/掩码/网关，标记 services.dhclient，
+   * 地址改由 DORA 租约下发（引擎「无 IP 才绑定」语义不变）；关 = 重新走 IPAM 分配
+   * 静态地址（扫描当前拓扑占用）。池耗尽抛中文错误。随即重算路由。
+   */
+  setDhcpClient: (deviceId: DeviceId, enabled: boolean) => void;
   /**
    * 拉线：设备接口 → 交换机端口（WF-7）。写 topology.connections + 接口
    * connectedSwitchId，随即重算路由。对端必须是交换机；接口已连线则抛中文错误。
@@ -188,6 +194,48 @@ export const useStore = create<StoreState>((set) => ({
                 ...dev.interfaces,
                 [interfaceId]: { ...dev.interfaces[interfaceId], ...patch },
               },
+            },
+          },
+        }),
+      };
+    }),
+  setDhcpClient: (deviceId, enabled) =>
+    set((s) => {
+      const dev = s.topology.devices[deviceId];
+      if (!dev || dev.kind !== 'pc') return {};
+      // 冲突检测同 addDevice：已占用 = 其他设备所有接口的 IP。
+      const used = new Set<IPv4>();
+      for (const d of Object.values(s.topology.devices)) {
+        if (d.id === deviceId) continue;
+        for (const iface of Object.values(d.interfaces)) {
+          if (iface.ip) used.add(iface.ip);
+        }
+      }
+      const pool = new SubnetPool(s.config.subnetPool.subnets);
+      const interfaces: Record<string, NetworkInterface> = {};
+      for (const [ifaceId, iface] of Object.entries(dev.interfaces)) {
+        if (!enabled) {
+          const a = pool.allocateEndDevice(used);
+          if (!a) {
+            throw new Error(
+              'IP 地址池已耗尽，无法为该设备分配静态地址。请在全局配置中添加子网，或先释放部分地址。',
+            );
+          }
+          used.add(a.ip);
+          interfaces[ifaceId] = { ...iface, ip: a.ip, netmask: a.netmask, gateway: a.gateway };
+        } else {
+          interfaces[ifaceId] = { ...iface, ip: null, netmask: null, gateway: null };
+        }
+      }
+      return {
+        topology: applyRouting({
+          ...s.topology,
+          devices: {
+            ...s.topology.devices,
+            [deviceId]: {
+              ...dev,
+              interfaces,
+              services: { ...dev.services, dhclient: { enabled, config: {} } },
             },
           },
         }),

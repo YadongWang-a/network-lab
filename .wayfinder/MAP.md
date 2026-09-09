@@ -51,11 +51,16 @@ status: open
 - **[M5 清理 = 仓库只含生产轨]**（WF-18 已决·重构终点）— 整删 `src/legacy/`（108 文件）与 `tests/`（vitest DOM 旧测试）；`AppPrototype.tsx` 升格 `src/ui/App.tsx`；剥离死 tile（annotation/isc-dhcp-*/bind9/animation/settings）；i18n 孤儿 key 审计归零（zh/en 对齐 176 key）；`lint` 脚本修正为 `eslint scripts`（TS 门禁 = tsc strict）。验收：`tsc`+`vite build`+verify 场景 1–9 全绿 + 冷启动冒烟 4/4（真 store/引擎路径无 legacy 引用）。`src/` 仅剩 domain/state/engine/visualization/terminal/parsers/ui/i18n。剩余开放：WF-13 存档（用户暂缓，open）、WF-12 测试策略（待定案；verify-engine Bun 断言暂为契约载体）。
 - **[测试策略 = vitest 契约单测 + Playwright 最小冒烟]**（WF-12 已决·2026-09-08）—— `scripts/verify-engine.ts`（Bun 直跑 9 场景）退役，契约拆入 `tests/engine/*.test.ts`（7 文件 25 用例，断言口径 = SimEvent 流 + store 终态的可观测契约，不测源码文本）；组件测试不做（UI 靠 E2E 兜底）；E2E = Playwright 最小冒烟 4 用例（中文 UI / 拖放+IPAM+拉线 / 种子拓扑演示 ping 追踪行+动画帧 / 终端 ip addr），webServer 自动拉起 vite；命令 = `pnpm test` / `pnpm e2e` 独立两条，不挂 pre-commit，TS 门禁仍为 tsc strict。注意：App 挂载即播种演示拓扑，e2e ping/终端复用种子（连通 /24 段），拖放用例先「新建拓扑」清场。验收：tsc ✓ + vitest 25/25 + e2e 4/4×2 轮 + build ✓ + eslint 0 error。至此全票 closed（WF-13 存档暂缓、WF-19 backlog 待排期除外）。
 - **[包解剖视图 = 追踪面板内联 + 字节合成]**（WF-20 已决·2026-09-08，对齐 数据包可视化演示_单视图整合版.html）——点追踪行在追踪面板下方内联解剖（无对话框）：层条（flex 按字节数，点层切换）+ 字段/值/说明表 + hex 视图（点层高亮字节段）。`src/domain/packetBytes.ts` 纯函数按层字段合成真实包头字节（以太网/ARP/IP/ICMP/TCP/UDP 精确；DHCP/DNS/HTTP 忠实编码标 approx），`src/ui/PacketDissect.tsx` 承载三件套；报文详情悬浮窗整删，`packet.*` i18n 孤儿清除（zh/en 各 +42 `dissect.*`/`desc.*`）。验收：vitest 34/34（含合成器 9 用例）+ e2e 4/4×2 + build ✓ + 浏览器实测层切换/hex 高亮。
+- **[路由器连线 = 端口映射连接点]**（WF-21 已决·2026-09-09）——路由器一接口一端口点（左/右/顶 = enp0s3/8/9），连线由所拖端口定接口（`p-<ifaceId>` handle），其余设备维持「第一个空闲接口」；路由器边锚定端口点。显示：已连线端口「端口名+IP」常显；未连线端口点悬停出点级 Tooltip（`IP · 未接线`），连线拖拽中全端口标签铺开；路由器名牌不显示单一 IP（多接口无意义）。验收 tsc+vitest 34/34+e2e 4/4+build+浏览器判别性拖拽两轮全绿。
+- **[设备属性面板按设备类型差异化 = 仅裁剪表单]**（WF-22 已决·2026-09-09）——范围仅 UI 裁剪不动语义：路由器 = label+转发+接口(IP/掩码)+路由表；交换机 = label+L2 提示；终端 = label+接口(IP/掩码/网关)+服务；服务区块仅在存在已启用服务时渲染；路由表仅路由器；防火墙区块整删（引擎不消费恒空，连带 4 个 i18n 孤儿 key 清除）。只读域升级可编辑/静态路由手填留待后续点单。
+- **[PC DHCP 客户端开关 = 默认关·开关切换·获取手动]**（WF-23 已决·2026-09-09）——PC 类抽屉加「DHCP 客户端」开关（落 `services.dhclient`）：开 = 清静态 IP + 接口字段只读（DORA 后显示租约值，未获取显示提示），关 = IPAM 重分配静态；获取仍手动（演示命令/终端 dhclient），引擎绑定语义零改动。仅 PC 类出开关。表单随开关重挂载。
+- **[悬停 × 直删 = 线缆断开 + 设备删除]**（WF-24 已决·2026-09-09）——自定义 `cable` 边（`getStraightPath`+`BaseEdge`，命中区 interactionWidth 36，根因：默认 20px 命中区对斜线极难点中）；线中点 SVG ×（`.react-flow__edge:hover` CSS 显隐，`src/ui/canvas.css`）点击即 `removeConnection`；设备悬停左上角红 × 经 `NodeActions.deleteDevice` 删除并清抽屉；键盘删除保留。
 
 ## Not yet specified（fog）
 - 「协议数据可视化」扩展：首批首项已落地（包解剖视图，见 Decisions so far 的包解剖条目）；其余扩展（跨设备字段变化对照等）仍待用户点单。
 - 自动配置的交互形态细节（实时自动 vs 向导式确认）。
 - 状态持久化（存档/读档）**暂缓中**（用户 2026-09-07 决定先不做，WF-13 保持 open；待交互形态/旧档兼容需求明确后再排期）。
+- 设备抽屉只读域升级可编辑（DHCP 池 / DNS zone / apache2 vhost / 静态路由手填）——WF-22 拍板本期仅裁剪不做；待点单后立票（需先定自动/手工共存策略）。
 - 性能与规模目标（单拓扑设备数 / 并发报文数上限）。
 - 终端是否保留全部原命令（apt/nano/realnode 等）还是精简。
 - 旧 `.ptt` 存档是否需要一次性导入转换器。

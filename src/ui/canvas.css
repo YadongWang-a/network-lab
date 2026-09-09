@@ -1,0 +1,11 @@
+/* 画布局部样式（WF-24）：线缆悬停 × 断开钮。SVG 同 <g> 内，靠父级 .react-flow__edge:hover 显隐。 */
+.react-flow__edge .edge-del {
+  opacity: 0;
+  pointer-events: none;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+.react-flow__edge:hover .edge-del {
+  opacity: 1;
+  pointer-events: all;
+}
