@@ -11,13 +11,14 @@ import type {
   DeviceKind,
   DhcpdConfig,
   FilesystemNode,
+  InterfaceId,
   IPv4,
   NetworkInterface,
   Vec2,
 } from './types';
 import { SubnetPool, ipToInt, intToIp, randomMac, type SubnetAllocation } from './ipam';
 
-/** 各设备类型的默认接口（沿 legacy network_elements/*.js）。 */
+/** 各设备类型的默认接口（沿 legacy network_elements/*.js）。路由器基础 3 口，追加口见 routerInterfaceName。 */
 export const KIND_INTERFACES: Record<DeviceKind, readonly string[]> = {
   pc: ['enp0s3'],
   router: ['enp0s3', 'enp0s8', 'enp0s9'],
@@ -26,6 +27,71 @@ export const KIND_INTERFACES: Record<DeviceKind, readonly string[]> = {
   'dhcp-server': ['enp0s3'],
   'dhcp-relay-agent': ['enp0s3'],
 };
+
+/** 路由器端口上下限（WF-25）：端口数随连线数浮动，基础 3 口、上限 8 口。 */
+export const ROUTER_BASE_PORTS = KIND_INTERFACES.router.length;
+export const ROUTER_MAX_PORTS = 8;
+
+/**
+ * 路由器端口命名（WF-25）：基础三口径沿 legacy（enp0s3/enp0s8/enp0s9），
+ * 追加端口自 enp0s10 起顺延槽位号（enp0s10、enp0s11 …）。
+ */
+export function routerInterfaceName(ordinal: number): string {
+  const base = KIND_INTERFACES.router;
+  return ordinal < base.length ? base[ordinal] : `enp0s${10 + ordinal - base.length}`;
+}
+
+/** 造一个路由器端口并尝试取子网池中第 ordinal 个子网的网关（池中无对应子网 → 无 IP，待手动配置）。 */
+function createRouterInterface(ordinal: number, pool: SubnetPool, used: Set<IPv4>): NetworkInterface {
+  const name = routerInterfaceName(ordinal);
+  const iface: NetworkInterface = {
+    id: name,
+    name,
+    mac: randomMac(),
+    ip: null,
+    netmask: null,
+    gateway: null,
+    connectedSwitchId: null,
+  };
+  const a = pool.allocateRouterInterface(ordinal, used);
+  if (a) {
+    iface.ip = a.ip;
+    iface.netmask = a.netmask;
+    used.add(a.ip);
+  }
+  return iface;
+}
+
+/**
+ * 路由器端口随连线数浮动（WF-25）：端口数 = clamp(max(基础 3, 已连线数 + 1), …, 上限) ——
+ * 恒留 1 个空口供拉线（React Flow 需已存在的 Handle 才能起拖）。收缩只回收「尾部、未连线、
+ * 未配置 IP」的追加端口（基础端口与手动配过 IP 的端口永不回收）。返回新接口表；无变化返回 null。
+ */
+export function syncRouterPorts(
+  dev: Device,
+  pool: SubnetPool,
+  usedIps: ReadonlySet<IPv4>,
+): Record<InterfaceId, NetworkInterface> | null {
+  const list = Object.values(dev.interfaces);
+  const connected = list.filter((f) => f.connectedSwitchId !== null).length;
+  const desired = Math.min(Math.max(ROUTER_BASE_PORTS, connected + 1), ROUTER_MAX_PORTS);
+  let changed = false;
+  while (
+    list.length > desired &&
+    list.length > ROUTER_BASE_PORTS &&
+    list[list.length - 1].connectedSwitchId === null &&
+    list[list.length - 1].ip === null
+  ) {
+    list.pop();
+    changed = true;
+  }
+  const used = new Set(usedIps);
+  while (list.length < desired) {
+    list.push(createRouterInterface(list.length, pool, used));
+    changed = true;
+  }
+  return changed ? Object.fromEntries(list.map((f) => [f.id, f])) : null;
+}
 
 /** 设备类型 → 默认标签前缀（store 生成 PC-0 / Router-1 这类名称）。 */
 export const KIND_LABEL: Record<DeviceKind, string> = {
@@ -87,25 +153,22 @@ export function createDevice(kind: DeviceKind, opts: CreateDeviceOptions): Devic
   let dhcpAllocation: SubnetAllocation | null = null;
 
   for (const [index, name] of KIND_INTERFACES[kind].entries()) {
-    const iface: NetworkInterface = {
-      id: name,
-      name,
-      mac: randomMac(),
-      ip: null,
-      netmask: null,
-      gateway: null,
-      connectedSwitchId: null,
-    };
+    const iface: NetworkInterface =
+      kind === 'router'
+        ? createRouterInterface(index, pool, used)
+        : {
+            id: name,
+            name,
+            mac: randomMac(),
+            ip: null,
+            netmask: null,
+            gateway: null,
+            connectedSwitchId: null,
+          };
+    // 路由器端口已在 createRouterInterface 内完成分配。
     if (kind === 'switch') {
-      // L2 设备：只分配 MAC，不占 IP。
-    } else if (kind === 'router') {
-      const a = pool.allocateRouterInterface(index, used);
-      if (a) {
-        iface.ip = a.ip;
-        iface.netmask = a.netmask;
-        used.add(a.ip);
-      }
-    } else {
+      // L2 设备：只分配 MAC，不占 IP（mac 已在上方生成）。
+    } else if (kind !== 'router') {
       const a = pool.allocateEndDevice(used);
       if (!a) {
         throw new Error(

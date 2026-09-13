@@ -12,7 +12,7 @@ import type {
 } from '@/domain/types';
 import { DEFAULT_SUBNETS, isValidCidr, SubnetPool } from '@/domain/ipam';
 import type { Cidr, Connection } from '@/domain/types';
-import { createDevice, KIND_LABEL } from '@/domain/deviceFactory';
+import { createDevice, KIND_LABEL, syncRouterPorts } from '@/domain/deviceFactory';
 import { computeRouterRoutingTables } from '@/domain/routing';
 
 // 切片结构（WF-2 归一化 + WF-3 事件可视化）：
@@ -40,6 +40,21 @@ function applyRouting(topology: Topology): Topology {
     devices = { ...devices, [id]: { ...dev, routingTable: rows } };
   }
   return devices === topology.devices ? topology : { ...topology, devices };
+}
+
+/**
+ * 冲突检测口径（WF-6）：已占用 = 拓扑中全部接口的 IP（含手动设置的）。
+ * `excludeDeviceId` 供「重分配自身地址」的设备使用（自身旧地址不算占用）。
+ */
+function usedIpsIn(topology: Topology, excludeDeviceId?: DeviceId): Set<IPv4> {
+  const used = new Set<IPv4>();
+  for (const d of Object.values(topology.devices)) {
+    if (d.id === excludeDeviceId) continue;
+    for (const iface of Object.values(d.interfaces)) {
+      if (iface.ip) used.add(iface.ip);
+    }
+  }
+  return used;
 }
 
 export interface DevicesSlice {
@@ -116,18 +131,11 @@ export const useStore = create<StoreState>((set) => ({
     const label = opts?.label ?? `${KIND_LABEL[kind]}-${deviceSeq}`;
     deviceSeq += 1;
     set((s) => {
-      // 冲突检测：已占用 = 当前拓扑中所有接口的 IP（含手动设置的）。
-      const used = new Set<IPv4>();
-      for (const d of Object.values(s.topology.devices)) {
-        for (const iface of Object.values(d.interfaces)) {
-          if (iface.ip) used.add(iface.ip);
-        }
-      }
       const device = createDevice(kind, {
         id,
         label,
         position: opts?.position ?? { x: 0, y: 0 },
-        usedIps: used,
+        usedIps: usedIpsIn(s.topology),
         subnets: s.config.subnetPool.subnets,
       });
       // WF-7：新设备尚无连线，路由表不变（返回原对象），统一走 applyRouting 收口。
@@ -149,20 +157,23 @@ export const useStore = create<StoreState>((set) => ({
       const connections = s.topology.connections.filter(
         (c) => c.fromDeviceId !== id && c.toSwitchId !== id,
       );
+      // WF-25：被删交换机释放端口 → 路由器回收多余空口（与断线同口径）。
+      const used = usedIpsIn({ devices, connections });
+      const pool = new SubnetPool(s.config.subnetPool.subnets);
       for (const devId of Object.keys(devices)) {
         const d = devices[devId];
+        let interfaces = d.interfaces;
+        let touched = false;
         for (const ifaceId of Object.keys(d.interfaces)) {
           const iface = d.interfaces[ifaceId];
           if (iface.connectedSwitchId === id) {
-            devices[devId] = {
-              ...d,
-              interfaces: {
-                ...d.interfaces,
-                [ifaceId]: { ...iface, connectedSwitchId: null },
-              },
-            };
+            interfaces = { ...interfaces, [ifaceId]: { ...iface, connectedSwitchId: null } };
+            touched = true;
           }
         }
+        if (!touched) continue;
+        const dev: Device = { ...d, interfaces };
+        devices[devId] = { ...dev, interfaces: syncRouterPorts(dev, pool, used) ?? interfaces };
       }
       // WF-7：路由重算 —— 删路由器后其远端条目与途经它的 next-hop 一并消失。
       return { topology: applyRouting({ devices, connections }) };
@@ -203,14 +214,7 @@ export const useStore = create<StoreState>((set) => ({
     set((s) => {
       const dev = s.topology.devices[deviceId];
       if (!dev || dev.kind !== 'pc') return {};
-      // 冲突检测同 addDevice：已占用 = 其他设备所有接口的 IP。
-      const used = new Set<IPv4>();
-      for (const d of Object.values(s.topology.devices)) {
-        if (d.id === deviceId) continue;
-        for (const iface of Object.values(d.interfaces)) {
-          if (iface.ip) used.add(iface.ip);
-        }
-      }
+      const used = usedIpsIn(s.topology, deviceId);
       const pool = new SubnetPool(s.config.subnetPool.subnets);
       const interfaces: Record<string, NetworkInterface> = {};
       for (const [ifaceId, iface] of Object.entries(dev.interfaces)) {
@@ -269,19 +273,23 @@ export const useStore = create<StoreState>((set) => ({
         toPort,
       };
       connSeq += 1;
+      // WF-25：路由器端口随连线数浮动 —— 连线占掉最后一个空口时自动追加新口。
+      const connected: Device = {
+        ...dev,
+        interfaces: { ...dev.interfaces, [interfaceId]: { ...iface, connectedSwitchId: switchId } },
+      };
+      const grown = syncRouterPorts(
+        connected,
+        new SubnetPool(s.config.subnetPool.subnets),
+        usedIpsIn(s.topology),
+      );
       // WF-7：新网段/新桥出现 → 重算路由。
       return {
         topology: applyRouting({
           ...s.topology,
           devices: {
             ...s.topology.devices,
-            [deviceId]: {
-              ...dev,
-              interfaces: {
-                ...dev.interfaces,
-                [interfaceId]: { ...iface, connectedSwitchId: switchId },
-              },
-            },
+            [deviceId]: { ...connected, interfaces: grown ?? connected.interfaces },
           },
           connections: [...s.topology.connections, connection],
         }),
@@ -293,19 +301,23 @@ export const useStore = create<StoreState>((set) => ({
       if (!dev || !dev.interfaces[interfaceId]) return {}; // 幂等
       const iface = dev.interfaces[interfaceId];
       if (!iface.connectedSwitchId) return {}; // 未连线
+      // WF-25：断开释放端口 → 路由器回收尾部未配置的空口。
+      const opened: Device = {
+        ...dev,
+        interfaces: { ...dev.interfaces, [interfaceId]: { ...iface, connectedSwitchId: null } },
+      };
+      const shrunk = syncRouterPorts(
+        opened,
+        new SubnetPool(s.config.subnetPool.subnets),
+        usedIpsIn(s.topology),
+      );
       // WF-7：断线 → 该接口退出网段图 → 重算路由。
       return {
         topology: applyRouting({
           ...s.topology,
           devices: {
             ...s.topology.devices,
-            [deviceId]: {
-              ...dev,
-              interfaces: {
-                ...dev.interfaces,
-                [interfaceId]: { ...iface, connectedSwitchId: null },
-              },
-            },
+            [deviceId]: { ...opened, interfaces: shrunk ?? opened.interfaces },
           },
           connections: s.topology.connections.filter(
             (c) => !(c.fromDeviceId === deviceId && c.fromInterfaceId === interfaceId),

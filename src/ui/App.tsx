@@ -2,8 +2,8 @@
  * 应用 UI 壳（源自 WF-9 原型；WF-15 M1 后拓扑数据流已入库）。
  * - 拓扑单一事实源 = `store.topology`：画布节点/边是其投影；拖放建设备、拉线、编辑、
  *   拖动位置、删除一律经 store 动作写回（WF-6 自动分配 / WF-7 自动路由随之生效）。
- * - 连线语义：线缆一端为设备接口、另一端为交换机（WF-14 决策）；路由器多接口按空闲
- *   顺序接线（enp0s3 → enp0s8 → enp0s9）。
+ * - 连线语义：线缆一端为设备接口、另一端为交换机（WF-14 决策）；路由器端口随连线数浮动
+ *   （基础 enp0s3/enp0s8/enp0s9，占满即追加 enp0s10…，上限 8，恒留 1 空口；WF-25）。
  * - 仿真（WF-16 + WF-17）：全部演示命令由真实 SimulationEngine 驱动 —— ping/traceroute
  *   L2/L3；DHCP DORA/DNS/HTTP/TCP(FTP·telnet)/ARP 扫描走服务层（dhcpd/dhclient、named、
  *   apache2）。追踪/详情/动画为引擎事件的 UI 壳。
@@ -30,6 +30,7 @@ import {
 import { FolderOpenOutlined, PlusOutlined, CaretRightOutlined, CloseOutlined, CodeOutlined, TableOutlined, RightOutlined, LeftOutlined, PauseCircleOutlined, StepForwardOutlined, ReloadOutlined } from '@ant-design/icons';
 import zhCN from 'antd/locale/zh_CN';
 import type { Device, DeviceId, DeviceKind, Packet, ServiceState } from '@/domain/types';
+import { ROUTER_MAX_PORTS } from '@/domain/deviceFactory';
 import { useStore } from '@/state/store';
 import { viz } from '@/visualization/registry';
 import { SimulationEngine, protoOf, type SimEvent } from '@/engine/SimulationEngine';
@@ -179,8 +180,54 @@ function rowOfPacket(p: Packet, info: string, seq: number): TraceRow {
 
 
 // —— React Flow 节点/边：data 只带投影所需最小信息，内容经 store 订阅 ——
-/** 路由器端口点位置（按接口序取位：enp0s3 左 / enp0s8 右 / enp0s9 顶）。 */
-const PORT_POS = [Position.Left, Position.Right, Position.Top] as const;
+/**
+ * 路由器端口点环布（WF-25）：左 → 右 → 顶 → 底 轮流坐边，同一边多个端口沿该边均分。
+ * 基础 3 口仍是 左/右/顶（WF-21 观感不变），追加端口自底边起继续环绕。
+ */
+const PORT_SIDES = [Position.Left, Position.Right, Position.Top, Position.Bottom] as const;
+
+/** 端口 i 的坐边与在该边上的百分比偏移（空表返回空）。 */
+function portLayout(count: number): { pos: Position; offset: number }[] {
+  const out: { pos: Position; offset: number }[] = new Array(count);
+  const groups: number[][] = PORT_SIDES.map(() => []);
+  for (let i = 0; i < count; i++) groups[i % PORT_SIDES.length].push(i);
+  groups.forEach((idxs, side) => {
+    idxs.forEach((i, k) => {
+      out[i] = { pos: PORT_SIDES[side], offset: ((k + 1) / (idxs.length + 1)) * 100 };
+    });
+  });
+  return out;
+}
+
+/** 连接点在所坐边上的定位（左右边 → top%，上下边 → left%）。 */
+function portHandleStyle(pos: Position, offset: number) {
+  return pos === Position.Left || pos === Position.Right ? { top: `${offset}%` } : { left: `${offset}%` };
+}
+
+/** 端口标签相对节点的铺开方向（左右边贴外侧并随 offset 上下排；上下边同理）。 */
+function portLabelStyle(pos: Position, offset: number) {
+  const along = `${offset}%`;
+  const base = { position: 'absolute' as const, zIndex: 2, pointerEvents: 'none' as const, width: 'max-content' };
+  switch (pos) {
+    case Position.Left:
+      return { ...base, right: 'calc(100% + 10px)', top: along, transform: 'translateY(-50%)', textAlign: 'right' as const };
+    case Position.Right:
+      return { ...base, left: 'calc(100% + 10px)', top: along, transform: 'translateY(-50%)' };
+    case Position.Bottom:
+      // 底边标签让开节点下方居中的设备名牌（top: 82 起）。
+      return { ...base, top: 'calc(100% + 36px)', left: along, transform: 'translateX(-50%)', textAlign: 'center' as const };
+    default:
+      return { ...base, bottom: 'calc(100% + 8px)', left: along, transform: 'translateX(-50%)', textAlign: 'center' as const };
+  }
+}
+
+/** Tooltip 朝向（贴边铺开，避免裁切）。 */
+const PORT_TIP_SIDE: Record<Position, 'left' | 'right' | 'top' | 'bottom'> = {
+  [Position.Left]: 'left',
+  [Position.Right]: 'right',
+  [Position.Top]: 'top',
+  [Position.Bottom]: 'bottom',
+};
 
 type DeviceData = { kind: Kind; deviceId: DeviceId };
 type DeviceFlowNode = Node<DeviceData, 'device'>;
@@ -196,6 +243,8 @@ function DeviceNodeView({ data }: NodeProps<DeviceFlowNode>) {
   const ip = ifaceIp(device);
   // 路由器端口映射连接点：悬停或任意连线拖拽中显示端口与 IP
   const showPorts = device.kind === 'router' && (hover || conn.inProgress);
+  const ports = device.kind === 'router' ? Object.values(device.interfaces) : [];
+  const layout = portLayout(ports.length);
   return (
     <div
       style={{ width: 80, height: 80 }}
@@ -234,19 +283,19 @@ function DeviceNodeView({ data }: NodeProps<DeviceFlowNode>) {
         ))}
       {/* 路由器端口映射连接点：一接口一端口；已连线端口常显端口名+IP，未连线端口悬停点出
           tooltip（贴画布右缘时铺开会裁切），连线拖拽中全部铺开供选口 */}
-      {device.kind === 'router' &&
-        Object.values(device.interfaces).map((f, i) => {
-          const pos = PORT_POS[i % PORT_POS.length];
+      {ports.map((f, i) => {
+          const { pos, offset } = layout[i];
           const connected = f.connectedSwitchId !== null;
           const label = f.ip ? (connected ? f.ip : `${f.ip} · ${t('port.unconnected')}`) : t('port.unconnected');
           return (
             <Fragment key={f.id}>
-              <Tooltip title={`${f.name} · ${label}`} placement={pos === Position.Left ? 'left' : 'top'}>
+              <Tooltip title={`${f.name} · ${label}`} placement={PORT_TIP_SIDE[pos]}>
                 <Handle
                   id={`p-${f.id}`}
                   type="source"
                   position={pos}
                   style={{
+                    ...portHandleStyle(pos, offset),
                     opacity: showPorts || connected ? 1 : 0,
                     pointerEvents: showPorts && !connected ? 'all' : 'none',
                     width: 11,
@@ -257,16 +306,7 @@ function DeviceNodeView({ data }: NodeProps<DeviceFlowNode>) {
                 />
               </Tooltip>
               {(connected || conn.inProgress) && (
-                <div
-                  style={{
-                    position: 'absolute', zIndex: 2, pointerEvents: 'none', width: 'max-content',
-                    ...(pos === Position.Left
-                      ? { right: 'calc(100% + 10px)', top: '50%', transform: 'translateY(-50%)', textAlign: 'right' }
-                      : pos === Position.Right
-                        ? { left: 'calc(100% + 10px)', top: '50%', transform: 'translateY(-50%)' }
-                        : { bottom: 'calc(100% + 8px)', left: '50%', transform: 'translateX(-50%)', textAlign: 'center' }),
-                  }}
-                >
+                <div style={portLabelStyle(pos, offset)}>
                   <div style={{ fontSize: 10, fontWeight: 600, lineHeight: '13px', color: '#1f1f1f', textShadow: '0 0 3px #fff, 0 0 3px #fff, 0 0 3px #fff' }}>
                     {f.name}
                   </div>
@@ -586,7 +626,13 @@ function Shell() {
     const port = handleId?.startsWith('p-') ? dev.interfaces[handleId.slice(2)] : undefined;
     const chosen = port ?? Object.values(dev.interfaces).find((f) => f.connectedSwitchId === null);
     if (!chosen) {
-      message.warning(t('msg.noFreeIface', { label: dev.label }));
+      // 路由器空口由 store 保证恒有 1 个（WF-25），走到这里的只可能是已达端口上限。
+      const atLimit = dev.kind === 'router' && Object.keys(dev.interfaces).length >= ROUTER_MAX_PORTS;
+      message.warning(
+        atLimit
+          ? t('msg.maxPorts', { label: dev.label, max: ROUTER_MAX_PORTS })
+          : t('msg.noFreeIface', { label: dev.label }),
+      );
       return;
     }
     try {
@@ -1378,21 +1424,31 @@ function Shell() {
                   </Form.Item>
                 )}
                 <Form.Item label={t('drawer.interfaces')}>
-                  {Object.values(selected.interfaces).map((f, i) => (
-                    <div key={f.id} style={{ border: '1px solid #f0f0f0', borderRadius: 6, padding: '8px 10px', marginBottom: 8 }}>
-                      <div style={{ fontWeight: 600, marginBottom: 6, fontSize: 13 }}>{f.name}</div>
-                      <Space direction="vertical" style={{ width: '100%' }} size={4}>
-                        <Form.Item label={t('drawer.ip')} name={`ip${i}`} style={{ marginBottom: 4 }}><Input placeholder="0.0.0.0" disabled={selDhcpOn} /></Form.Item>
-                        <Form.Item label={t('drawer.mask')} name={`mask${i}`} style={{ marginBottom: 4 }}><Input placeholder="255.255.255.0" disabled={selDhcpOn} /></Form.Item>
-                        {selected.kind !== 'router' && (
-                          <Form.Item label={t('drawer.gw')} name={`gw${i}`} style={{ marginBottom: 0 }}><Input placeholder="192.168.1.1" disabled={selDhcpOn} /></Form.Item>
-                        )}
-                        {selDhcpOn && !f.ip && (
-                          <div style={{ color: '#999', fontSize: 12 }}>{t('drawer.dhcpHint')}</div>
-                        )}
-                      </Space>
-                    </div>
-                  ))}
+                  {(() => {
+                    // 路由器只列已接线端口（WF-26）：未接线端口无 IP 且不参与路由（WF-7 线缆感知），
+                    // 不再占表单；字段名仍用接口表中的原序号，保存逻辑按序号回填不受影响。
+                    const shown = Object.values(selected.interfaces)
+                      .map((f, i) => ({ f, i }))
+                      .filter(({ f }) => selected.kind !== 'router' || f.connectedSwitchId !== null);
+                    if (shown.length === 0) {
+                      return <span style={{ color: '#999', fontSize: 12 }}>{t('drawer.noWiredIface')}</span>;
+                    }
+                    return shown.map(({ f, i }) => (
+                      <div key={f.id} style={{ border: '1px solid #f0f0f0', borderRadius: 6, padding: '8px 10px', marginBottom: 8 }}>
+                        <div style={{ fontWeight: 600, marginBottom: 6, fontSize: 13 }}>{f.name}</div>
+                        <Space direction="vertical" style={{ width: '100%' }} size={4}>
+                          <Form.Item label={t('drawer.ip')} name={`ip${i}`} style={{ marginBottom: 4 }}><Input placeholder="0.0.0.0" disabled={selDhcpOn} /></Form.Item>
+                          <Form.Item label={t('drawer.mask')} name={`mask${i}`} style={{ marginBottom: 4 }}><Input placeholder="255.255.255.0" disabled={selDhcpOn} /></Form.Item>
+                          {selected.kind !== 'router' && (
+                            <Form.Item label={t('drawer.gw')} name={`gw${i}`} style={{ marginBottom: 0 }}><Input placeholder="192.168.1.1" disabled={selDhcpOn} /></Form.Item>
+                          )}
+                          {selDhcpOn && !f.ip && (
+                            <div style={{ color: '#999', fontSize: 12 }}>{t('drawer.dhcpHint')}</div>
+                          )}
+                        </Space>
+                      </div>
+                    ));
+                  })()}
                 </Form.Item>
               </>
             )}
